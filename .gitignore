@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets
+.env
+
+# Project outputs (generated)
+data/
+logs/
+results/
+models/
+
+# Vector DB / caches
+vectordb/
+.chroma_json/
+.chroma_html/
+.cache/
+
+# Raw dataset
+dataset/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+*.7z

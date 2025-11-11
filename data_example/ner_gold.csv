@@ -1,0 +1,4 @@
+﻿id,label
+ACS_OER_00006_5.txt,"{'SUBSTRATE': 'nickel foam'}, {'PRECURSOR': 'FeSO4 7H2O'}, {'PRECURSOR': 'NiSO4·6H2O'}, {'ADDITIVE': 'K2B4O7·4H2O'}, {'SOLVENT': 'glycol–DI water'}, {'ADDITIVE': 'l-cysteine'}, {'TARGET': 'Fe-doped nickel sulfide (FeNi2S4)'}"
+Elsevier_OER_02380_10.txt,"{'TARGET': 'ZIF-67'}, {'PRECURSOR': 'Co (NO3)2·6H2O'}, {'SOLVENT': 'distilled (DI) water'}, {'SOLVENT': 'ethanol'}, {'SOLVENT': 'N,N-dimethylformamide'}, {'ADDITIVE': '2-Methylimidazole'}"
+Wiley_OER_00873_13.txt,"{'SUBSTRATE': 'Ni foam'}, {'ADDITIVE': 'thioacetamide'}, {'ADDITIVE': 'non-ionic surfactants'}, {'SOLVENT': 'deionized water'}, {'TARGET': 'Ni3S2/MoS2'}, {'PRECURSOR': 'anhydrous sodium molybdate'}"
