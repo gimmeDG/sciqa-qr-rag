@@ -1,0 +1,23 @@
+# Core scientific stack
+numpy==2.2.4
+pandas==2.2.3
+scipy==1.15.2
+
+# ML / NLP
+torch==2.6.0
+transformers==4.51.3
+scikit-learn==1.6.1
+
+# Hugging Face datasets (compatible with ragas>=0.3.x)
+datasets>=4.0.0,<5.0.0
+
+# LLM / API
+openai==1.71.0
+python-dotenv==1.1.0
+
+# RAG
+ragas==0.3.8
+rank-bm25==0.2.2
+
+# Vector DB (used only if you run create_vectordb)
+chromadb==1.0.3
