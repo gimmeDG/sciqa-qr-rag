@@ -1050,20 +1050,6 @@ class UnifiedRAG:
             eta_done = f"{rm}m {rs:02d}s left" if i < n else "done"
             print(f"\r  [{bar_done}] {pct_done*100:5.1f}%  ({i}/{n})  {eta_done}      ", flush=True)
 
-            # --- DEBUG: 질문/응답/정답 출력 (임시) ---
-            _resp = item.get("response") or ""
-            _exp = item.get("expected_answer") or ""
-            _ok = item.get("is_correct", False)
-            _mark = "O" if _ok else "X"
-            print(f"    [{_mark}] Q: {query}")
-            print(f"        Response: {_resp}")
-            print(f"        Expected: {_exp}")
-            if item.get("is_decomposed"):
-                _suff = item.get("is_basic_sufficient", True)
-                print(f"        basic_sufficient: {_suff} -> decomposed: True")
-            print()
-            # --- END DEBUG ---
-
             if eval_mode == "doi":
                 ok = item.get("is_correct", False)
                 by_cond[cond]["total"] += 1
