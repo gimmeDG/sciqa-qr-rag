@@ -12,7 +12,7 @@ The system transforms unstructured scientific literature into a structured datab
 
 ### Preprocess pipeline
 <p align="center">
-<img src="https://github.com/gimmeDG/sciqa-qr-rag/blob/main/images/preprocess%20pipeline.jpg" width="72%">
+<img src="https://github.com/gimmeDG/sciqa-qr-rag/blob/main/images/Preprocess%20pipeline.jpg?raw=true" width="72%">
 <br>
 <em>Preprocessing pipeline for water splitting database construction</em>
 </p>
