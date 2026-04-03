@@ -1,0 +1,51 @@
+﻿type,id,question,answer,condition
+synthesis,Elsevier_OER_01532,"In the hydrothermal synthesis of CoMoO4·H2O with a reaction time of 6 hours, what is the reaction temperature?",150 °C,1
+performance,Elsevier_OER_06804,What is the overpotential of M-C@CFOSs to reach 10 mA cm-2 for OER?,330 mV,1
+performance,Elsevier_OER_06204,What is the overpotential of HNPs to reach 10 mA cm-2 for OER?,290 mV,1
+performance,ACS_OER_00380,What is the Tafel slope of LFNOSe-III for the oxygen evolution reaction?,95 mV dec-1,1
+synthesis,Elsevier_OER_02376,"In the hydrothermal synthesis of NiOF using nickel(II) chloride hexahydrate as precursor with a reaction time of 1 hours under air atmosphere, what is the reaction temperature?",150 °C,1
+synthesis,Wiley_OER_00279,"In the hydrothermal synthesis of DS--NiFe LDH using NiCl2·6H2O as precursor with a reaction time of 8 hours under nitrogen atmosphere, what is the reaction temperature?",120 °C,1
+performance,Elsevier_OER_05601,What is the Tafel slope of NiCo/Ni/CuO/CF for the oxygen evolution reaction?,37.9 mV dec-1,1
+performance,Elsevier_OER_01293,What is the Tafel slope of K-ZIF-67-Ac-800 for the oxygen evolution reaction?,56.9 mV dec-1,1
+performance,RSC_OER_00070,What is the Tafel slope of CoOx/FeOx/CNTs for the oxygen evolution reaction?,43 mV dec-1,1
+synthesis,ACS_OER_00598,"In the hydrothermal synthesis of CuCo2Se4 with a reaction time of 24 hours, what is the reaction temperature?",145 °C,1
+synthesis,Elsevier_OER_01507,"In the hydrothermal synthesis of CoFe-BDC using Co(NO3)2·6H2O as precursor with a reaction time of 12 hours, what is the reaction temperature?",150 °C,1
+performance,Elsevier_OER_08231,What is the Tafel slope of CC@CoO@FeOOH-NWAs for the oxygen evolution reaction?,82 mV dec-1,1
+synthesis,Elsevier_OER_07114,"In the hydrothermal synthesis of CoFeZr0·1/NCBC using FeCl3·6H2O as precursor with a reaction time of 15 hours, what is the reaction temperature?",160 °C,1
+performance,Elsevier_OER_01082,What is the Tafel slope of C@NiCo12 for the oxygen evolution reaction?,157 mV dec-1,1
+performance,Elsevier_OER_08164,What is the Tafel slope of RuNiOx for the oxygen evolution reaction?,56 mV dec-1,1
+synthesis,RSC_OER_02368,"In the hydrothermal synthesis of Mo-Co9Se8@NiSe/NF using SeO2 as precursor with a reaction time of 8 hours, what is the reaction temperature?",160 °C,1
+synthesis,ACS_OER_00537,"In the hydrothermal synthesis of Co3O4@NF with a reaction time of 6 hours, what is the reaction temperature?",120 °C,1
+performance,RSC_OER_00025,What is the Tafel slope of V–Ni3N/NF for OER in 1 M KOH?,45 mV dec-1,1
+synthesis,ACS_OER_01568,"In the hydrothermal synthesis of Framework using Co(SO4)·6H2O as precursor with a reaction time of 2 hours, what is the reaction temperature?",140 °C,1
+performance,Elsevier_OER_05457,What is the Tafel slope of ZIF@Ni-B-Co for the oxygen evolution reaction?,77 mV dec-1,1
+synthesis,Elsevier_OER_06631,"In the hydrothermal synthesis of Co/P-N-C with a reaction time of 10 hours, what is the reaction temperature?",160 °C,1
+performance,Elsevier_OER_03805,What is the Tafel slope of NiFe-UMNs for the oxygen evolution reaction?,30 mV dec-1,1
+performance,Elsevier_OER_06181,What is the overpotential of Ni4Mo/MoO2/C-10 to reach 10 mA cm-2 for OER?,275 mV,1
+performance,Elsevier_OER_04132,What is the overpotential of Mo-Ni2P/NF to reach 40 mA cm-2 for OER?,315 mV,1
+performance,Elsevier_OER_00416,What is the Tafel slope of Zr500-MSNF for the oxygen evolution reaction?,78.5 mV dec-1,1
+performance,RSC_OER_02691,What is the Tafel slope of Co9S8-SWCNT for the oxygen evolution reaction?,159 mV dec-1,1
+synthesis,ACS_OER_01496,"In the hydrothermal synthesis of Fe–Co–P catalyst using iron chloride as precursor with a reaction time of 12 hours, what is the reaction temperature?",150 °C,1
+performance,ACS_OER_02570,What is the Tafel slope of BSCF-12 for OER in 1 M KOH?,58.08 mV dec-1,1
+performance,Wiley_OER_01038,What is the overpotential of Fe2O3@h-Co9S8@C to reach 10 mA cm-2 for OER?,205 mV,1
+performance,Wiley_OER_01519,What is the Tafel slope of MnFe2O4/BC for OER in 1 m KOH?,87 mV dec-1,1
+performance,Elsevier_OER_06262,What is the overpotential of Ni9Fe1 to reach 100 mA cm-2 for OER?,347 mV,1
+performance,RSC_OER_03109,What is the overpotential of NiFeS/CoS to reach 150 mA cm-2 for OER?,150 mV,1
+performance,Wiley_OER_03028,What is the Tafel slope of Fe2Co8HCF for the oxygen evolution reaction?,63 mV dec-1,1
+performance,RSC_OER_02394,What is the Tafel slope of Co-Cu(BDC)/GC for the oxygen evolution reaction?,60.4 mV dec-1,1
+synthesis,Elsevier_OER_05058,"In the hydrothermal synthesis of NaOH with a reaction time of 4 hours, what is the reaction temperature?",180 °C,1
+performance,Elsevier_OER_02272,What is the Tafel slope of WO3/Ni for the oxygen evolution reaction?,183 mV dec-1,1
+synthesis,RSC_OER_02427,"In the hydrothermal synthesis of MoS2/CoB/CC using CoCl2·6H2O as precursor, what is the reaction temperature?",80 °C,1
+synthesis,RSC_OER_00770,"In the hydrothermal synthesis of OGFs with a reaction time of 12 hours, what is the reaction temperature?",180 °C,1
+performance,Elsevier_OER_02380,What is the Tafel slope of IrOx@Ni/Co-ZIF-67 for the oxygen evolution reaction?,38 mV dec-1,1
+synthesis,RSC_OER_03711,"In the hydrothermal synthesis of CoFe2O4@NF with a reaction time of 7 hours, what is the reaction temperature?",140 °C,1
+performance,ACS_OER_01664,What is the Tafel slope of Ni/Co-DH-2 for OER in 1 M KOH?,86.6 mV dec-1,1
+synthesis,Elsevier_OER_00909,"In the hydrothermal synthesis of CoO-BP-RGO with a reaction time of 1 hours, what is the reaction temperature?",180 °C,1
+synthesis,ACS_OER_01579,"In the hydrothermal synthesis of PdO@Co3O4 with a reaction time of 12 hours, what is the reaction temperature?",150 °C,1
+performance,ACS_OER_02768,What is the overpotential of Co-MOF/Fe10 to reach 10 mA cm-2 for OER?,260 mV,1
+synthesis,ACS_OER_01837,"In the hydrothermal synthesis of NiCoP with a reaction time of 10 hours, what is the reaction temperature?",100 °C,1
+synthesis,Elsevier_OER_02450,"In the hydrothermal synthesis of SnO2–Sb(13 − x)–Ru(x)-Pt(3) using SnCl4·5H2O as precursor with a reaction time of 1 hours, what is the reaction temperature?",70 °C,1
+synthesis,RSC_OER_03729,"In the hydrothermal synthesis of CoSe2@MoSe2 hollow heterostructures using CoSe2 hollow nanocubes as precursor with a reaction time of 15 hours, what is the reaction temperature?",200 °C,1
+performance,RSC_OER_03514,What is the Tafel slope of NiFe/Co9S8/CC for the oxygen evolution reaction?,55 mV dec-1,1
+synthesis,ACS_OER_03022,"In the hydrothermal synthesis of NiCo-LDH@HOS with a reaction time of 4 hours, what is the reaction temperature?",120 °C,1
+performance,Elsevier_OER_01960,What is the Tafel slope of S2CoCd-350 for the oxygen evolution reaction?,49.8 mV dec-1,1

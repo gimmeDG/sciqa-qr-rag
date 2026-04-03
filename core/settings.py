@@ -61,7 +61,7 @@ OPENAI_API_BASE: str = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 # --------------------------------------------------------------------------------------
 # BERT defaults
 # --------------------------------------------------------------------------------------
-BERT_MODEL_PATH: str = os.getenv("BERT_MODEL_PATH", "matbert-base-uncased")
+BERT_MODEL_PATH: str = os.getenv("BERT_MODEL_PATH", "ZongqianLi/matbert-base-uncased")
 BERT_BATCH_SIZE: int = int(os.getenv("BERT_BATCH_SIZE", 32))
 BERT_LR: float       = float(os.getenv("BERT_LR", 2e-5))
 BERT_EPOCHS: int     = int(os.getenv("BERT_EPOCHS", 3))
@@ -90,8 +90,33 @@ RAG_HTML_CHUNK_SIZE: int = int(os.getenv("RAG_HTML_CHUNK_SIZE", 300))
 
 # QA evaluation CSV (shared by both JSON and HTML)
 RAG_QA_CSV_PATH       = env_required("RAG_QA_CSV_PATH",      cast=_resolve_path)
+RAG_RAGAS_CSV_PATH    = _resolve_path(os.getenv("RAG_RAGAS_CSV_PATH", "./testset/ragas_descriptive_testset.csv"))
 
 RAG_EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "text-embedding-3-large")
 RAG_EMBED_DIMENSIONS: int = int(os.getenv("RAG_EMBED_DIMENSIONS", 3072))
 RAG_LLM_MODEL   = os.getenv("RAG_LLM_MODEL",   "gpt-4o")
 RAG_INSUFFICIENCY_CHECK_MODEL = os.getenv("RAG_INSUFFICIENCY_CHECK_MODEL", RAG_LLM_MODEL)
+
+
+# --------------------------------------------------------------------------------------
+# HoneyBee (Materials Science LLM)
+# --------------------------------------------------------------------------------------
+HONEYBEE_BASE_MODEL_PATH: Path = _resolve_path(
+    os.getenv("HONEYBEE_BASE_MODEL_PATH", "honeybee/llama-7b-hf")
+)
+HONEYBEE_LORA_PATH: Path = _resolve_path(
+    os.getenv("HONEYBEE_LORA_PATH", "honeybee/7b")
+)
+HONEYBEE_LOAD_IN_8BIT: bool = os.getenv("HONEYBEE_LOAD_IN_8BIT", "true").lower() == "true"
+HONEYBEE_LOAD_IN_4BIT: bool = os.getenv("HONEYBEE_LOAD_IN_4BIT", "false").lower() == "true"
+HONEYBEE_MAX_NEW_TOKENS: int = int(os.getenv("HONEYBEE_MAX_NEW_TOKENS", 512))
+
+
+# --------------------------------------------------------------------------------------
+# Llama 3.3 70B (via Vertex AI Model Garden MaaS)
+# --------------------------------------------------------------------------------------
+LLAMA_PROJECT_ID: str = os.getenv("LLAMA_PROJECT_ID", "qr-rag-llama")
+LLAMA_LOCATION: str = os.getenv("LLAMA_LOCATION", "us-central1")
+LLAMA_MODEL_ID: str = os.getenv("LLAMA_MODEL_ID", "meta/llama-3.3-70b-instruct-maas")
+LLAMA_MAX_TOKENS: int = int(os.getenv("LLAMA_MAX_TOKENS", 1000))
+LLAMA_TEMPERATURE: float = float(os.getenv("LLAMA_TEMPERATURE", 0.0))

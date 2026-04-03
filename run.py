@@ -13,79 +13,58 @@ def main():
     parser = argparse.ArgumentParser(description='OER Text Classification & RAG Pipeline')
     parser.add_argument('--task', type=str, required=True,
                        choices=[
-                           # BERT
-                           'bert_paragraph_train', 'bert_paragraph_classify',
-                           'bert_synthesis_train', 'bert_synthesis_classify',
-                           'full_bert_pipeline',
+                           # BERT (train & evaluate with 8:2 split)
+                           'bert_paragraph', 'bert_synthesis',
                            # GPT
                            'gpt_paragraph', 'gpt_synthesis', 'gpt_ner',
-                           # NER (pipeline)
-                           'gpt_ner_filter', 'gpt_ner_eval',
+                           # HoneyBee (Materials Science LLM)
+                           'honeybee_paragraph', 'honeybee_synthesis', 'honeybee_ner',
+                           # Llama 3.3 70B (via Vertex AI MaaS)
+                           'llama_paragraph', 'llama_synthesis', 'llama_ner',
                            # Vector DB
                            'create_vectordb',
-                           # RAG (4 modes)
-                           'rag_json_c_rag', 'rag_html_c_rag',
-                           'rag_json_qr_rag', 'rag_html_qr_rag',
-                           # EVALUATION (classification)
-                           'bert_paragraph_eval', 'bert_synthesis_eval',
-                           'gpt_paragraph_eval', 'gpt_synthesis_eval'
+                           # RAG - GPT
+                           'rag_json_c_rag_gpt', 'rag_html_c_rag_gpt',
+                           'rag_json_qr_rag_gpt', 'rag_html_qr_rag_gpt',
+                           # RAG - Llama
+                           'rag_json_c_rag_llama', 'rag_html_c_rag_llama',
+                           'rag_json_qr_rag_llama', 'rag_html_qr_rag_llama',
+                           # Interactive RAG (single query)
+                           'interactive_gpt', 'interactive_llama',
                        ])
-    # Optional overrides for evaluation
-    parser.add_argument('--pred_csv', default=None, help='prediction csv path (override)')
-    parser.add_argument('--gold_csv', default=None, help='gold csv path (override)')
-    parser.add_argument('--save_json', default=None, help='metrics json output path')
-    parser.add_argument('--match_type', default='r', choices=['e', 'r'],
-                        help="NER matching: 'e' (exact) or 'r' (relaxed)")
     # Ingestion options
     parser.add_argument('--format', default='both', choices=['json', 'html', 'both'],
-                        help='ingestion target for create_vectordb')
+                        help='ingestion target for create_vectordb (or dataset format for interactive)')
+    # Interactive mode options
+    parser.add_argument('--retrieval', default='qr-rag', choices=['c-rag', 'qr-rag'],
+                        help='retrieval method for interactive mode')
     parser.add_argument('--batch_size', type=int, default=1000,
                         help='batch size for ChromaDB ingestion')
+    # DB variant for batch RAG runs
+    parser.add_argument('--db_variants', type=str, default=None,
+                        help='Comma-separated DB variants (e.g., "123,300,500,battery")')
+    # RAG evaluation mode
+    parser.add_argument('--mode', type=str, default='doi', choices=['doi', 'descriptive'],
+                        help='RAG evaluation mode: doi (accuracy) or descriptive (RAGAS)')
 
     args = parser.parse_args()
     TASK = args.task
 
 
     # --------------------------------------------------------------------------------------
-    # BERT tasks
+    # BERT tasks (train & evaluate with 8:2 split)
     # --------------------------------------------------------------------------------------
-    if TASK == "bert_paragraph_train":
+    if TASK == "bert_paragraph":
         from core.config import BERTClassificationConfig
-        from preprocess.BERT_tasks import train_bert_classifier
+        from preprocess.BERT_tasks import train_and_evaluate
         config = BERTClassificationConfig.create('paragraph')
-        train_bert_classifier(config)
+        train_and_evaluate(config)
 
-    elif TASK == "bert_paragraph_classify":
+    elif TASK == "bert_synthesis":
         from core.config import BERTClassificationConfig
-        from preprocess.BERT_tasks import classify_text
-        config = BERTClassificationConfig.create('paragraph')
-        classify_text(config)
-
-    elif TASK == "bert_synthesis_train":
-        from core.config import BERTClassificationConfig
-        from preprocess.BERT_tasks import train_bert_classifier
+        from preprocess.BERT_tasks import train_and_evaluate
         config = BERTClassificationConfig.create('synthesis')
-        train_bert_classifier(config)
-
-    elif TASK == "bert_synthesis_classify":
-        from core.config import BERTClassificationConfig
-        from preprocess.BERT_tasks import classify_text
-        config = BERTClassificationConfig.create('synthesis')
-        classify_text(config)
-
-    elif TASK == "full_bert_pipeline":
-        from core.config import BERTClassificationConfig
-        from preprocess.BERT_tasks import train_bert_classifier, classify_text
-        print("\n[1/4] Training paragraph classifier.")
-        config_para = BERTClassificationConfig.create('paragraph')
-        train_bert_classifier(config_para)
-        print("\n[2/4] Classifying paragraphs.")
-        classify_text(config_para)
-        print("\n[3/4] Training synthesis classifier.")
-        config_syn = BERTClassificationConfig.create('synthesis')
-        train_bert_classifier(config_syn)
-        print("\n[4/4] Classifying synthesis.")
-        classify_text(config_syn)
+        train_and_evaluate(config)
 
 
     # --------------------------------------------------------------------------------------
@@ -95,134 +74,305 @@ def main():
         from preprocess.GPT_tasks import process_dataset
         from core.config import GPTClassificationConfig
         from core import settings
+        from core.data_utils import create_timestamped_output_dir
         cfg = GPTClassificationConfig.create('paragraph')
-        # Input CSV expected at: DATA_DIR/paragraph_raw.csv  (id,text,label; label can be dummy)
-        input_file = os.path.join(settings.DATA_DIR, "paragraph_raw.csv")
-        output_dir = os.path.join(settings.RESULTS_DIR, "GPT/gpt_paragraph")
+        input_file = os.path.join(settings.DATA_DIR, "paragraph_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "gpt_paragraph")
         process_dataset(input_file, output_dir, 'paragraph', cfg)
 
     elif TASK == "gpt_synthesis":
         from preprocess.GPT_tasks import process_dataset
         from core.config import GPTClassificationConfig
         from core import settings
+        from core.data_utils import create_timestamped_output_dir
         cfg = GPTClassificationConfig.create('synthesis')
-        # Input CSV expected at: DATA_DIR/synthesis_raw.csv  (id,text,label; label can be dummy)
-        input_file = os.path.join(settings.DATA_DIR, "synthesis_raw.csv")
-        output_dir = os.path.join(settings.RESULTS_DIR, "GPT/gpt_synthesis")
+        input_file = os.path.join(settings.DATA_DIR, "synthesis_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "gpt_synthesis")
         process_dataset(input_file, output_dir, 'synthesis-method', cfg)
 
     elif TASK == "gpt_ner":
         from preprocess.GPT_tasks import process_dataset
+        from core.config import GPTClassificationConfig
         from core import settings
-        cfg = {"model": "gpt-4", "temperature": 0, "max_tokens": 1000}
-        # Input CSV expected at: DATA_DIR/ner_raw.csv  (id,text,label; label can be dummy)
-        input_file = os.path.join(settings.DATA_DIR, "ner_raw.csv")
-        output_dir = os.path.join(settings.RESULTS_DIR, "GPT/synthesis_ner/ner_output")
+        from core.data_utils import create_timestamped_output_dir
+        cfg = GPTClassificationConfig.create('ner')
+        input_file = os.path.join(settings.DATA_DIR, "RE-NER_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "gpt_ner")
         process_dataset(input_file, output_dir, 'ner', cfg)
 
 
     # --------------------------------------------------------------------------------------
-    # NER post-processing / evaluation
+    # HoneyBee (Materials Science LLM) tasks
     # --------------------------------------------------------------------------------------
-    elif TASK == "gpt_ner_filter":
-        from preprocess.GPT_ner_filter import filter_ner_results
+    elif TASK == "honeybee_paragraph":
+        from preprocess.HoneyBee_tasks import process_dataset
+        from core.config import HoneyBeeConfig
         from core import settings
-        inp = os.path.join(settings.RESULTS_DIR, "GPT/synthesis_ner/ner_output/ner_results_raw.csv")
-        out = os.path.join(settings.RESULTS_DIR, "GPT/synthesis_ner/ner_output/ner_results_filtered.csv")
-        filter_ner_results(inp, out)
+        from core.data_utils import create_timestamped_output_dir
+        cfg = HoneyBeeConfig.create('paragraph')
+        input_file = os.path.join(settings.DATA_DIR, "paragraph_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "honeybee_paragraph")
+        process_dataset(input_file, output_dir, 'paragraph', cfg)
 
-    elif TASK == "gpt_ner_eval":
-        from preprocess.evaluation import evaluate_ner
+    elif TASK == "honeybee_synthesis":
+        from preprocess.HoneyBee_tasks import process_dataset
+        from core.config import HoneyBeeConfig
         from core import settings
-        default_pred = os.path.join(settings.RESULTS_DIR, "GPT/synthesis_ner/ner_output/ner_results_filtered.csv")
-        default_gold = os.path.join(settings.DATA_DIR, "ner_gold.csv")
-        default_out = os.path.join(settings.RESULTS_DIR, "metrics/ner_eval.json")
+        from core.data_utils import create_timestamped_output_dir
+        cfg = HoneyBeeConfig.create('synthesis-method')
+        input_file = os.path.join(settings.DATA_DIR, "synthesis_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "honeybee_synthesis")
+        process_dataset(input_file, output_dir, 'synthesis-method', cfg)
 
-        pred_csv = args.pred_csv or default_pred
-        gold_csv = args.gold_csv or default_gold
-        save_json = args.save_json or default_out
-        match_type = args.match_type or "r"
+    elif TASK == "honeybee_ner":
+        from preprocess.HoneyBee_tasks import process_dataset
+        from core.config import HoneyBeeConfig
+        from core import settings
+        from core.data_utils import create_timestamped_output_dir
+        cfg = HoneyBeeConfig.create('ner')
+        input_file = os.path.join(settings.DATA_DIR, "RE-NER_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "honeybee_ner")
+        process_dataset(input_file, output_dir, 'ner', cfg)
 
-        print(f"[ner-eval] pred={pred_csv}")
-        print(f"[ner-eval] gold={default_gold}")
-        print(f"[ner-eval] match_type={match_type}")
-        evaluate_ner(pred_csv=pred_csv, gold_csv=gold_csv,
-                     match_type=match_type, save_json=save_json)
+
+    # --------------------------------------------------------------------------------------
+    # Llama 3.3 70B (via Vertex AI MaaS) tasks
+    # --------------------------------------------------------------------------------------
+    elif TASK == "llama_paragraph":
+        from preprocess.LLaMA_tasks import process_dataset
+        from core.config import LlamaConfig
+        from core import settings
+        from core.data_utils import create_timestamped_output_dir
+        cfg = LlamaConfig.create('paragraph')
+        input_file = os.path.join(settings.DATA_DIR, "paragraph_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "llama_paragraph")
+        process_dataset(input_file, output_dir, 'paragraph', cfg)
+
+    elif TASK == "llama_synthesis":
+        from preprocess.LLaMA_tasks import process_dataset
+        from core.config import LlamaConfig
+        from core import settings
+        from core.data_utils import create_timestamped_output_dir
+        cfg = LlamaConfig.create('synthesis-method')
+        input_file = os.path.join(settings.DATA_DIR, "synthesis_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "llama_synthesis")
+        process_dataset(input_file, output_dir, 'synthesis-method', cfg)
+
+    elif TASK == "llama_ner":
+        from preprocess.LLaMA_tasks import process_dataset
+        from core.config import LlamaConfig
+        from core import settings
+        from core.data_utils import create_timestamped_output_dir
+        cfg = LlamaConfig.create('ner')
+        input_file = os.path.join(settings.DATA_DIR, "RE-NER_testset.csv")
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, "llama_ner")
+        process_dataset(input_file, output_dir, 'ner', cfg)
 
 
     # --------------------------------------------------------------------------------------
     # Vector DB / RAG
     # --------------------------------------------------------------------------------------
     elif TASK == "create_vectordb":
-        from preprocess.build_chromadb import main as db_main
+        from preprocess.build_oer_db import main as db_main
         sys.argv = [sys.argv[0], "--format", args.format, "--batch_size", str(args.batch_size)]
         db_main()
 
-    elif TASK in ("rag_json_c_rag", "rag_html_c_rag", "rag_json_qr_rag", "rag_html_qr_rag"):
-        from rag.rag_framework import UnifiedRAG
-        from core import settings
-        fmt = "json" if "json" in TASK else "html"
-        mode = "qr-rag" if "_qr_rag" in TASK else "c-rag"
-        rag = UnifiedRAG(dataset_format=fmt, retrieval=mode)
-        rag.evaluate_csv(save_dir=os.path.join(settings.RESULTS_DIR, "RAG"))
+    elif TASK in ("rag_json_c_rag_gpt", "rag_html_c_rag_gpt", "rag_json_qr_rag_gpt", "rag_html_qr_rag_gpt",
+                   "rag_json_c_rag_llama", "rag_html_c_rag_llama", "rag_json_qr_rag_llama", "rag_html_qr_rag_llama"):
+        import importlib
+        import core.settings as settings_module
+        from core.data_utils import create_timestamped_output_dir
+        import rag.rag_framework as rag_module
 
+        # Set LLM backend based on task name
+        if "_llama" in TASK:
+            rag_module.set_llm_backend("llama")
+            base_task = TASK.replace("_llama", "")
+        else:
+            rag_module.set_llm_backend("openai")
+            base_task = TASK.replace("_gpt", "")
+
+        fmt = "json" if "json" in base_task else "html"
+        retrieval_mode = "qr-rag" if "_qr_rag" in base_task else "c-rag"
+        eval_mode = args.mode  # "doi" or "descriptive" (RAGAS)
+
+        # Select CSV based on evaluation mode
+        if eval_mode == "descriptive":
+            csv_path = str(settings_module.RAG_RAGAS_CSV_PATH)
+        else:
+            csv_path = None  # Use default from settings (RAG_QA_CSV_PATH)
+
+        # Handle multiple DB variants if specified
+        if args.db_variants:
+            variants = [v.strip() for v in args.db_variants.split(",")]
+            for variant in variants:
+                print("\n" + "=" * 70)
+                print(f"  Running with DB variant: {variant}")
+                print("=" * 70)
+                # Override environment variables for this variant
+                # Special handling for "battery" and "batteryonly" variants
+                if variant == "battery":
+                    if fmt == "json":
+                        os.environ["RAG_JSON_COLLECTION"] = "oer_battery_json"
+                        os.environ["RAG_JSON_PERSIST_DIR"] = "./.chroma_json_battery"
+                    else:
+                        os.environ["RAG_HTML_COLLECTION"] = "oer_battery_html"
+                        os.environ["RAG_HTML_PERSIST_DIR"] = "./.chroma_html_battery"
+                elif variant == "batteryonly":
+                    if fmt == "json":
+                        os.environ["RAG_JSON_COLLECTION"] = "oer_battery_json"
+                        os.environ["RAG_JSON_PERSIST_DIR"] = "./.chroma_json_batteryonly"
+                    else:
+                        os.environ["RAG_HTML_COLLECTION"] = "oer_battery_html"
+                        os.environ["RAG_HTML_PERSIST_DIR"] = "./.chroma_html_batteryonly"
+                else:
+                    if fmt == "json":
+                        os.environ["RAG_JSON_COLLECTION"] = f"sciqa_json_{variant}"
+                        os.environ["RAG_JSON_PERSIST_DIR"] = f"./.chroma_json_{variant}"
+                    else:
+                        os.environ["RAG_HTML_COLLECTION"] = f"sciqa_html_{variant}"
+                        os.environ["RAG_HTML_PERSIST_DIR"] = f"./.chroma_html_{variant}"
+                # Reload BOTH settings AND rag_framework to pick up new env vars
+                importlib.reload(settings_module)
+                importlib.reload(rag_module)
+                # Re-apply LLM backend after reload (reload resets to default "openai")
+                if "_llama" in TASK:
+                    rag_module.set_llm_backend("llama")
+                else:
+                    rag_module.set_llm_backend("openai")
+                # Create RAG instance with updated settings
+                rag = rag_module.UnifiedRAG(dataset_format=fmt, retrieval=retrieval_mode, csv_path=csv_path)
+                # Use "ragas_" prefix for descriptive mode output folders
+                task_prefix = "ragas_" if eval_mode == "descriptive" else ""
+                output_dir = create_timestamped_output_dir(settings_module.RESULTS_DIR, f"{task_prefix}{TASK}_{variant}")
+                rag.evaluate_csv(save_dir=output_dir, eval_mode=eval_mode)
+        else:
+            rag = rag_module.UnifiedRAG(dataset_format=fmt, retrieval=retrieval_mode, csv_path=csv_path)
+            # Use "ragas_" prefix for descriptive mode output folders
+            task_prefix = "ragas_" if eval_mode == "descriptive" else ""
+            output_dir = create_timestamped_output_dir(settings_module.RESULTS_DIR, f"{task_prefix}{TASK}")
+            rag.evaluate_csv(save_dir=output_dir, eval_mode=eval_mode)
 
     # --------------------------------------------------------------------------------------
-    # Classification evaluation (BERT/GPT)
+    # Interactive RAG (single query mode)
     # --------------------------------------------------------------------------------------
-    elif TASK in ("bert_paragraph_eval", "bert_synthesis_eval",
-                  "gpt_paragraph_eval", "gpt_synthesis_eval"):
-        from preprocess.evaluation import evaluate_classification
+    elif TASK in ("interactive_gpt", "interactive_llama"):
+        import json
+        import time
+        import rag.rag_framework as rag_module
         from core import settings
+        from core.data_utils import create_timestamped_output_dir
 
-        if TASK == "bert_paragraph_eval":
-            default_pred = os.path.join(settings.RESULTS_DIR, "BERT/paragraph/prediction.csv")
-            default_gold = os.path.join(settings.DATA_DIR, "paragraph_gold.csv")
-            labels = ["synthesis", "system", "performance", "others"]
-        elif TASK == "bert_synthesis_eval":
-            default_pred = os.path.join(settings.RESULTS_DIR, "BERT/synthesis/prediction.csv")
-            default_gold = os.path.join(settings.DATA_DIR, "synthesis_gold.csv")
-            labels = [
-                "electrodeposition",
-                "sol-gel",
-                "solid-phase",
-                "hydro-solvothermal",
-                "precipitation",
-                "vapor-phase",
-                "others",
-            ]
-        elif TASK == "gpt_paragraph_eval":
-            default_pred = os.path.join(settings.RESULTS_DIR, "GPT/gpt_paragraph/paragraph_results.csv")
-            default_gold = os.path.join(settings.DATA_DIR, "paragraph_gold.csv")
-            labels = ["synthesis", "system", "performance", "others"]
-        elif TASK == "gpt_synthesis_eval":
-            default_pred = os.path.join(settings.RESULTS_DIR, "GPT/gpt_synthesis/synthesis-method_results.csv")
-            default_gold = os.path.join(settings.DATA_DIR, "synthesis_gold.csv")
-            labels = [
-                "electrodeposition",
-                "sol-gel",
-                "solid-phase",
-                "hydro-solvothermal",
-                "precipitation",
-                "vapor-phase",
-                "others",
-            ]
+        # Set LLM backend
+        llm_backend = "llama" if "_llama" in TASK else "openai"
+        if "_llama" in TASK:
+            rag_module.set_llm_backend("llama")
+        else:
+            rag_module.set_llm_backend("openai")
 
-        pred_csv = args.pred_csv or default_pred
-        gold_csv = args.gold_csv or default_gold
-        save_json = args.save_json or os.path.join(settings.RESULTS_DIR, "metrics", f"{TASK}.json")
+        # Use json format by default, or user-specified
+        fmt = "json" if args.format == "both" else args.format
+        retrieval = args.retrieval
 
-        print(f"[eval] pred={pred_csv}")
-        print(f"[eval] gold={gold_csv}")
-        evaluate_classification(
-            pred_csv=pred_csv,
-            gold_csv=gold_csv,
-            id_col="id",
-            pred_col="prediction",
-            gold_col="label",
-            label_order=labels,
-            save_json=save_json
-        )
+        # Create output directory for this session
+        output_dir = create_timestamped_output_dir(settings.RESULTS_DIR, TASK)
+        session_start = time.strftime("%Y%m%d_%H%M%S")
+        results_file = os.path.join(output_dir, f"interactive_{fmt}_{retrieval}_{session_start}.json")
+
+        # Initialize session data
+        session_data = {
+            "metadata": {
+                "session_start": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "task": TASK,
+                "dataset_format": fmt,
+                "retrieval_method": retrieval,
+                "llm_backend": llm_backend,
+            },
+            "queries": []
+        }
+
+        print("\n" + "=" * 70)
+        print("  Interactive RAG Mode")
+        print(f"  Format: {fmt} | Retrieval: {retrieval} | LLM: {'Llama' if '_llama' in TASK else 'GPT'}")
+        print(f"  Results will be saved to: {results_file}")
+        print("=" * 70)
+        print("  Type your question and press Enter.")
+        print("  To exit: type 'exit', 'quit', 'q', or press Ctrl+C\n")
+
+        rag = rag_module.UnifiedRAG(dataset_format=fmt, retrieval=retrieval)
+        query_count = 0
+
+        while True:
+            try:
+                query = input("Query: ").strip()
+                if not query:
+                    continue
+                if query.lower() in ("exit", "quit", "q"):
+                    break
+
+                query_count += 1
+                query_start = time.time()
+                print("\nSearching...\n")
+                response, retrieved, _ = rag._runner.answer(query, top_k=5)
+                execution_time = round(time.time() - query_start, 2)
+
+                print("-" * 70)
+                print("Answer:")
+                print(response)
+                print("-" * 70)
+                print(f"(Retrieved documents: {len(retrieved)}) | Time: {execution_time}s\n")
+
+                # Format retrieval info (similar to other modes)
+                retrieval_info = []
+                for rank, para in enumerate(retrieved, 1):
+                    retrieval_info.append({
+                        "rank": rank,
+                        "doc_id": para.get("doc_id", ""),
+                        "similarity_score": round(para.get("score", 0.0), 4),
+                        "section": para.get("section", ""),
+                        "paragraph_idx": para.get("paragraph_idx", -1),
+                        "text": para.get("text", ""),
+                        "text_length": len(para.get("text", "")),
+                    })
+
+                # Save query result
+                query_result = {
+                    "query_number": query_count,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "question": query,
+                    "response": response,
+                    "retrieval": {
+                        "top_k_paragraphs": retrieval_info,
+                        "unique_documents": list({p.get("doc_id") for p in retrieved if p.get("doc_id")}),
+                        "num_unique_documents": len({p.get("doc_id") for p in retrieved if p.get("doc_id")}),
+                    },
+                    "execution_time_sec": execution_time,
+                }
+                session_data["queries"].append(query_result)
+
+                # Save after each query (to prevent data loss)
+                with open(results_file, "w", encoding="utf-8") as f:
+                    json.dump(session_data, f, ensure_ascii=False, indent=2)
+
+            except KeyboardInterrupt:
+                print("\n")
+                break
+
+        # Finalize session
+        session_data["metadata"]["session_end"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        session_data["metadata"]["total_queries"] = query_count
+
+        # Final save
+        with open(results_file, "w", encoding="utf-8") as f:
+            json.dump(session_data, f, ensure_ascii=False, indent=2)
+
+        print("\n" + "=" * 70)
+        print(f"  Session ended. Total queries: {query_count}")
+        print(f"  Results saved to: {results_file}")
+        print("=" * 70)
+
+        # Skip "Task completed" message for interactive mode
+        sys.exit(0)
 
     print("\n" + "=" * 70)
     print("Task completed")

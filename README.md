@@ -51,28 +51,124 @@ python run.py --task <TASK_NAME> [options]
 
 #### RAG evaluation
 ```bash
-python run.py --task rag_json_c_rag     # JSON + C-RAG (dense retrieval)
-python run.py --task rag_json_qr_rag    # JSON + QR-RAG (hybrid retrieval + query reformulation)
-python run.py --task rag_html_c_rag     # HTML + C-RAG
-python run.py --task rag_html_qr_rag    # HTML + QR-RAG
+# GPT-4o backend
+python run.py --task rag_json_c_rag_gpt     # JSON + C-RAG (dense retrieval)
+python run.py --task rag_json_qr_rag_gpt    # JSON + QR-RAG (hybrid retrieval + query reformulation)
+python run.py --task rag_html_c_rag_gpt     # HTML + C-RAG
+python run.py --task rag_html_qr_rag_gpt    # HTML + QR-RAG
+
+# LLaMA 3.3-70B backend (via Vertex AI)
+python run.py --task rag_json_c_rag_llama
+python run.py --task rag_json_qr_rag_llama
+python run.py --task rag_html_c_rag_llama
+python run.py --task rag_html_qr_rag_llama
+
+# Options
+python run.py --task rag_json_qr_rag_gpt --mode descriptive  # RAGAS evaluation
+python run.py --task rag_json_qr_rag_gpt --db_variants "123,500,1000"  # Multiple DB sizes
+```
+
+#### Interactive mode
+For single-query testing without batch evaluation:
+```bash
+# GPT-4o backend
+python run.py --task interactive_gpt
+
+# LLaMA 3.3-70B backend
+python run.py --task interactive_llama
+
+# Options
+python run.py --task interactive_gpt --format json  # JSON dataset (default)
+python run.py --task interactive_gpt --format html  # HTML dataset
+python run.py --task interactive_gpt --retrieval c-rag  # C-RAG retrieval (default: qr-rag)
 ```
 
 #### Other tasks
 ```bash
-# Preprocess
-python run.py --task bert_paragraph_train
-python run.py --task bert_paragraph_classify
+# Preprocess - GPT-4 Turbo
 python run.py --task gpt_paragraph
+python run.py --task gpt_synthesis
 python run.py --task gpt_ner
+
+# Preprocess - HoneyBee-7B (Materials Science LLM)
+python run.py --task honeybee_paragraph
+python run.py --task honeybee_synthesis
+python run.py --task honeybee_ner
+
+# Preprocess - LLaMA 3.3-70B (via Vertex AI)
+python run.py --task llama_paragraph
+python run.py --task llama_synthesis
+python run.py --task llama_ner
+
+# MatBERT (fine-tuned)
+python run.py --task bert_paragraph
+python run.py --task bert_synthesis
 
 # Vector DB
 python run.py --task create_vectordb --format both
-
-# Evaluation
-python run.py --task bert_paragraph_eval
-python run.py --task gpt_paragraph_eval
 ```
 Full task list can be found in `run.py`.
+
+#### MatBERT Setup (Optional)
+
+[MatBERT](https://github.com/lbnlp/MatBERT) is a materials science domain-specific BERT model. To use `bert_*` tasks:
+
+1. Set the model path in `.env`:
+   ```
+   BERT_MODEL_PATH=ZongqianLi/matbert-base-uncased
+   ```
+   Or use a local path if downloaded manually:
+   ```
+   BERT_MODEL_PATH=/path/to/matbert
+   ```
+
+Note: The model will be automatically downloaded from [Hugging Face](https://huggingface.co/ZongqianLi/matbert-base-uncased) if not found locally.
+
+#### HoneyBee Model Setup (Optional)
+
+[HoneyBee](https://github.com/BangLab-UdeM-Mila/NLP4MatSci-HoneyBee) is a materials science domain-specific LLM (EMNLP 2023). To use `honeybee_*` tasks:
+
+1. Download model weights from [HoneyBee GitHub](https://github.com/BangLab-UdeM-Mila/NLP4MatSci-HoneyBee)
+2. Place the files in the `honeybee/` directory:
+   ```
+   honeybee/
+   ├── llama-7b-hf/    # Base LLaMA model
+   └── 7b/             # HoneyBee LoRA weights
+   ```
+3. Set paths in `.env` (optional, defaults to above structure):
+   ```
+   HONEYBEE_BASE_MODEL_PATH=honeybee/llama-7b-hf
+   HONEYBEE_LORA_PATH=honeybee/7b
+   ```
+
+Note: HoneyBee is not required for the main RAG pipeline. GPT or Llama tasks are recommended for general use.
+
+#### LLaMA 3.3-70B Setup (Optional)
+
+LLaMA 3.3-70B can be accessed through various methods (local deployment, cloud APIs, etc.). This project uses [Vertex AI Model Garden MaaS](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/llama) for managed API access. To use `llama_*` tasks:
+
+1. Set up Google Cloud CLI and authenticate:
+   ```bash
+   gcloud auth login
+   gcloud config set project <YOUR_PROJECT_ID>
+   gcloud services enable aiplatform.googleapis.com
+   ```
+
+2. Navigate to [Vertex AI Model Garden](https://console.cloud.google.com/vertex-ai/model-garden) and accept the Llama Community License Agreement for the Llama 3.3 model.
+
+3. Set up Application Default Credentials:
+   ```bash
+   gcloud auth application-default login
+   ```
+
+4. Configure `.env`:
+   ```
+   LLAMA_PROJECT_ID=your-gcp-project-id
+   LLAMA_LOCATION=us-central1
+   LLAMA_MODEL_ID=meta/llama-3.3-70b-instruct-maas
+   ```
+
+Note: MaaS (Model as a Service) requires no separate deployment step - Google Cloud manages the endpoint.
 
 ---
 
@@ -80,28 +176,27 @@ Full task list can be found in `run.py`.
 ```bash
 sciqa-qr-rag
 ├─ core/
-│ ├─ settings.py
-│ ├─ config.py
-│ └─ data_utils.py
+│  ├─ config.py           # Task-level configurations (BERT, GPT, HoneyBee, LLaMA)
+│  ├─ data_utils.py       # Data loading and processing utilities
+│  └─ settings.py         # Environment settings and paths
 ├─ preprocess/
-│ ├─ BERT_tasks.py
-│ ├─ GPT_tasks.py
-│ ├─ GPT_ner_filter.py
-│ ├─ evaluation.py
-│ └─ build_chromadb.py
+│  ├─ BERT_tasks.py       # MatBERT classification (paragraph, synthesis)
+│  ├─ GPT_tasks.py        # GPT-4 classification and NER
+│  ├─ HoneyBee_tasks.py   # HoneyBee (Materials Science LLM) tasks
+│  ├─ LLaMA_tasks.py      # LLaMA 3.3-70B via Vertex AI
+│  └─ build_oer_db.py     # ChromaDB vector database builder
 ├─ rag/
-│ └─ rag_framework.py
-├─ data_example/
-│ ├─ paragraph_raw.csv
-│ ├─ paragraph_gold.csv
-│ ├─ synthesis_raw.csv
-│ ├─ synthesis_gold.csv
-│ ├─ ner_raw.csv
-│ ├─ ner_gold.csv
-│ └─ qa_testset.csv
+│  └─ rag_framework.py    # RAG pipeline (C-RAG / QR-RAG)
+├─ testset/
+│  ├─ paragraph_testset.csv
+│  ├─ synthesis_testset.csv
+│  ├─ RE-NER_testset.csv
+│  ├─ rag_doi_testset.csv
+│  ├─ rag_numerical_testset.csv
+│  └─ ragas_descriptive_testset.csv
 ├─ images/
 ├─ .env.example
 ├─ requirements.txt
 ├─ LICENSE
-└─ run.py
+└─ run.py                 # CLI entry point
 ```

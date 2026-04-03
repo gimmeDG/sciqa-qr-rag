@@ -15,22 +15,28 @@ venv/
 # Secrets
 .env
 
-# Project outputs (generated)
+# Project outputs
 data/
 logs/
 results/
 models/
+stats_output/
 
 # Vector DB / caches
 vectordb/
 .chroma_json/
 .chroma_html/
+.chroma_json_*/
+.chroma_html_*/
 .cache/
 
 # Raw dataset
 dataset/
 
-# Archives
+
+HoneyBee/
+ignore/
+paper/
 *.zip
 *.tar.gz
 *.rar

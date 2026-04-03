@@ -11,6 +11,7 @@ from transformers import (
     get_linear_schedule_with_warmup
 )
 from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.model_selection import train_test_split
 
 from core import settings
 from core.config import BERTClassificationConfig
@@ -70,7 +71,7 @@ def _validate_labels(labels: list[int], num_labels: int) -> list[int]:
     return validated
 
 
-def evaluate_results(actual_labels, predicted_labels):
+def evaluate_results(actual_labels, predicted_labels, output_dir: str | None = None, task_type: str = "classification"):
     cm = confusion_matrix(actual_labels, predicted_labels)
     print("\nConfusion Matrix:")
     print(cm)
@@ -78,12 +79,145 @@ def evaluate_results(actual_labels, predicted_labels):
     print("\nClassification Report:")
     print(cr)
 
+    # Save evaluation to file
+    if output_dir:
+        eval_path = os.path.join(output_dir, f"{task_type}_evaluation.txt")
+        with open(eval_path, 'w', encoding='utf-8') as f:
+            f.write(f"BERT Classification Evaluation Results ({task_type})\n")
+            f.write("="*60 + "\n")
+            f.write(f"Confusion Matrix:\n{cm}\n\n")
+            f.write(f"Classification Report:\n{cr}\n")
+        print(f"[bert] evaluation saved: {eval_path}")
+
 
 # --------------------------------------------------------------------------------------
-# Train
+# Train & Evaluate (with train/test split)
+# --------------------------------------------------------------------------------------
+def train_and_evaluate(cfg: BERTClassificationConfig) -> None:
+    """
+    Train BERT classifier with stratified train/test split.
+    Each run uses a different random split for robustness.
+    Split ratio is configured via cfg.test_size (default 0.2 = 80:20).
+    """
+    set_seed(cfg.seed)
+    model_name = _resolve_model_name(cfg)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=cfg.num_labels)
+
+    # Load and preprocess data
+    data_csv = os.path.join(settings.DATA_DIR, cfg.input_filename)
+    df = read_csv_safely(data_csv)
+    df = process_csv_format(df, cfg.classification_type, ["text", "label"])
+
+    label2id = _label_to_id_map(cfg.label_names)
+    id2label = {i: n for i, n in enumerate(cfg.label_names)}
+
+    # Convert string labels to int
+    y = df["label"].str.strip().str.lower().map(
+        {k.lower(): v for k, v in label2id.items()}
+    ).fillna(-1).astype(int).tolist()
+
+    if any(v < 0 for v in y):
+        bad = df.loc[[i for i, v in enumerate(y) if v < 0], "label"].unique().tolist()
+        raise ValueError(f"Unknown labels found: {bad} (expected {cfg.label_names})")
+
+    y = _validate_labels(y, cfg.num_labels)
+    texts = df["text"].tolist()
+
+    # Train/test split (stratified, random each run)
+    import random
+    random_state = random.randint(0, 10000)
+    train_texts, test_texts, train_labels, test_labels = train_test_split(
+        texts, y, test_size=cfg.test_size, stratify=y, random_state=random_state
+    )
+    print(f"[bert] split data: train={len(train_texts)}, test={len(test_texts)} (random_state={random_state})")
+
+    # Create train dataloader
+    train_ds = TextLabelDataset(train_texts, train_labels, tokenizer, cfg.max_length)
+    sampler = RandomSampler(train_ds, generator=torch.Generator().manual_seed(cfg.seed))
+    train_dl = DataLoader(train_ds, sampler=sampler, batch_size=cfg.batch_size)
+
+    device = torch.device(f"cuda:{settings.CUDA_DEVICE}" if (settings.USE_GPU and torch.cuda.is_available()) else "cpu")
+    model.to(device)
+    print(f"[bert] device: {device}")
+
+    # Training
+    optim = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate)
+    num_training_steps = len(train_dl) * cfg.epochs
+    sched = get_linear_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=num_training_steps)
+
+    model.train()
+    step = 0
+    for epoch in range(cfg.epochs):
+        for batch in train_dl:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            out = model(**batch)
+            loss = out.loss
+            loss.backward()
+            optim.step()
+            sched.step()
+            optim.zero_grad()
+            step += 1
+            if step % 20 == 0:
+                print(f"[train] epoch={epoch+1}/{cfg.epochs} step={step} loss={loss.item():.4f}")
+
+    # Save model
+    out_dir = os.path.join(settings.MODELS_DIR, cfg.output_subdir)
+    os.makedirs(out_dir, exist_ok=True)
+    model.save_pretrained(out_dir)
+    tokenizer.save_pretrained(out_dir)
+    print(f"[train] saved model to: {out_dir}")
+
+    # Evaluate on test set
+    model.eval()
+    preds_idx = []
+    batch_size = cfg.batch_size
+
+    with torch.no_grad():
+        for i in range(0, len(test_texts), batch_size):
+            batch_texts = test_texts[i:i+batch_size]
+            enc = tokenizer(
+                batch_texts,
+                truncation=True,
+                padding="max_length",
+                max_length=cfg.max_length,
+                return_tensors="pt"
+            )
+            enc = {k: v.to(device) for k, v in enc.items()}
+            out = model(**enc)
+            preds = out.logits.argmax(dim=-1).cpu().tolist()
+            preds_idx.extend(preds)
+
+    pred_labels = [id2label[p] for p in preds_idx]
+    actual_labels = [id2label[l] for l in test_labels]
+
+    # Save results
+    from core.data_utils import create_timestamped_output_dir
+    result_dir = create_timestamped_output_dir(settings.RESULTS_DIR, f"bert_{cfg.classification_type}")
+
+    result_df = pd.DataFrame({
+        "text": test_texts,
+        "label": actual_labels,
+        "prediction": pred_labels
+    })
+    result_path = os.path.join(result_dir, "prediction.csv")
+    save_csv_safely(result_df, result_path)
+    print(f"[bert] saved predictions: {result_path}")
+
+    # Evaluation
+    evaluate_results(
+        actual_labels=actual_labels,
+        predicted_labels=pred_labels,
+        output_dir=result_dir,
+        task_type=cfg.classification_type
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Train (legacy - for external train data)
 # --------------------------------------------------------------------------------------
 def train_bert_classifier(cfg: BERTClassificationConfig) -> None:
-    """Train BERT classifier for paragraph/synthesis"""
+    """Train BERT classifier for paragraph/synthesis (uses full dataset)"""
     set_seed(cfg.seed)
     model_name = _resolve_model_name(cfg)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -93,12 +227,14 @@ def train_bert_classifier(cfg: BERTClassificationConfig) -> None:
     df = read_csv_safely(train_csv)
     df = process_csv_format(df, cfg.classification_type, ["text", "label"])
     label2id = _label_to_id_map(cfg.label_names)
-    y = df["label"].map(label2id).fillna(-1).astype(int).tolist()
-    
+    y = df["label"].str.strip().str.lower().map(
+        {k.lower(): v for k, v in label2id.items()}
+    ).fillna(-1).astype(int).tolist()
+
     if any(v < 0 for v in y):
         bad = df.loc[[i for i, v in enumerate(y) if v < 0], "label"].unique().tolist()
         raise ValueError(f"Unknown labels found: {bad} (expected {cfg.label_names})")
-    
+
     y = _validate_labels(y, cfg.num_labels)
 
     ds = TextLabelDataset(df["text"].tolist(), y, tokenizer, cfg.max_length)
@@ -196,8 +332,8 @@ def classify_text(cfg: BERTClassificationConfig, filter_labels: Optional[List[st
     id2label = {i: n for i, n in enumerate(cfg.label_names)}
     pred_labels = [id2label[p] for p in preds_idx]
 
-    out_dir = os.path.join(settings.RESULTS_DIR, cfg.output_subdir)
-    os.makedirs(out_dir, exist_ok=True)
+    from core.data_utils import create_timestamped_output_dir
+    out_dir = create_timestamped_output_dir(settings.RESULTS_DIR, f"bert_{cfg.classification_type}_classify")
     out_path = os.path.join(out_dir, "prediction.csv")
     out_df = pd.DataFrame({"id": df["id"], "text": df["text"], "prediction": pred_labels})
     save_csv_safely(out_df, out_path)
@@ -206,7 +342,9 @@ def classify_text(cfg: BERTClassificationConfig, filter_labels: Optional[List[st
     if has_gold:
         evaluate_results(
             actual_labels=df["label"].astype(str).str.strip().str.lower().tolist(),
-            predicted_labels=pd.Series(pred_labels).astype(str).str.strip().str.lower().tolist()
+            predicted_labels=pd.Series(pred_labels).astype(str).str.strip().str.lower().tolist(),
+            output_dir=out_dir,
+            task_type=cfg.classification_type
         )
     else:
         print("[infer] gold labels not provided -> evaluation skipped")

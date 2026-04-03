@@ -17,14 +17,41 @@ from core import settings
 
 _RETRY_EXCEPTIONS = (RateLimitError, APITimeoutError, APIConnectionError)
 
-@retry(
-    retry=retry_if_exception_type(_RETRY_EXCEPTIONS),
-    wait=wait_exponential(multiplier=1, min=1, max=16),
-    stop=stop_after_attempt(5),
-    reraise=True,
-)
-def _call_openai_chat(**kwargs):
-    return _OPENAI_CLIENT.chat.completions.create(**kwargs)
+# ======================================================================================
+# Llama Token Usage & Cost Tracking
+# ======================================================================================
+_LLAMA_USAGE = {"prompt_tokens": 0, "completion_tokens": 0}
+
+# Llama 3.3 70B pricing on Vertex AI (per 1M tokens)
+_LLAMA_PRICE_INPUT = 0.27   # $0.27 / 1M input tokens
+_LLAMA_PRICE_OUTPUT = 0.28  # $0.28 / 1M output tokens
+
+def reset_llama_usage():
+    """Reset Llama token usage counters."""
+    global _LLAMA_USAGE
+    _LLAMA_USAGE = {"prompt_tokens": 0, "completion_tokens": 0}
+
+def get_llama_usage():
+    """Get Llama token usage and estimated cost."""
+    p = _LLAMA_USAGE["prompt_tokens"]
+    c = _LLAMA_USAGE["completion_tokens"]
+    cost_in = (p / 1_000_000) * _LLAMA_PRICE_INPUT
+    cost_out = (c / 1_000_000) * _LLAMA_PRICE_OUTPUT
+    return {
+        "prompt_tokens": p,
+        "completion_tokens": c,
+        "total_tokens": p + c,
+        "cost_input_usd": round(cost_in, 6),
+        "cost_output_usd": round(cost_out, 6),
+        "cost_total_usd": round(cost_in + cost_out, 6),
+    }
+
+def _track_llama_usage(response):
+    """Track token usage from Llama API response."""
+    global _LLAMA_USAGE
+    if hasattr(response, 'usage') and response.usage:
+        _LLAMA_USAGE["prompt_tokens"] += getattr(response.usage, 'prompt_tokens', 0) or 0
+        _LLAMA_USAGE["completion_tokens"] += getattr(response.usage, 'completion_tokens', 0) or 0
 
 # ======================================================================================
 # Optional dependencies for RAGAS evaluation (used only in descriptive mode)
@@ -33,6 +60,7 @@ def _call_openai_chat(**kwargs):
 try:
     from ragas import evaluate as ragas_evaluate
     from ragas.metrics import faithfulness, answer_relevancy
+    from ragas.run_config import RunConfig
     try:
         # ragas >= 0.3.x
         from ragas.metrics import ContextRelevance as _ContextRelevanceClass
@@ -42,12 +70,15 @@ try:
         from ragas.metrics import context_relevancy as _context_relevancy_fn
         _CONTEXT_METRIC = _context_relevancy_fn
     from datasets import Dataset
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    _RAGAS_AVAILABLE = True
 except Exception:
     ragas_evaluate = None
     faithfulness = None
     answer_relevancy = None
     _CONTEXT_METRIC = None
     Dataset = None
+    _RAGAS_AVAILABLE = False
 
 
 # ======================================================================================
@@ -65,8 +96,89 @@ except Exception:
     _OPENAI_OK = False
     _OPENAI_CLIENT = None
 
+# ======================================================================================
+# Optional Llama client (via Vertex AI MaaS with Google Auth)
+# Always initialize if possible (lazy init on first use)
+# ======================================================================================
+_LLAMA_OK = False
+_LLAMA_CLIENT = None
+
+class _LlamaClientForRAG:
+    """Llama client for RAG (OpenAI-compatible with Google Auth)."""
+    def __init__(self):
+        import google.auth
+        import google.auth.transport.requests
+        from core.config import LlamaConfig
+
+        self.cfg = LlamaConfig.create("paragraph")
+        self.creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        self.base_url = (
+            f"https://{self.cfg.location}-aiplatform.googleapis.com/v1beta1/"
+            f"projects/{self.cfg.project_id}/locations/{self.cfg.location}/endpoints/openapi"
+        )
+        self._refresh_client()
+
+    def _refresh_client(self):
+        import google.auth.transport.requests
+        self.creds.refresh(google.auth.transport.requests.Request())
+        self.client = OpenAI(base_url=self.base_url, api_key=self.creds.token)
+
+    def chat_completion(self, **kwargs):
+        import time as _time
+        if self.creds.expired or (self.creds.expiry and
+            (self.creds.expiry.timestamp() - _time.time()) < 300):
+            self._refresh_client()
+        kwargs["model"] = self.cfg.model_id
+        return self.client.chat.completions.create(**kwargs)
+
+def _get_llama_client():
+    """Lazy initialization of Llama client."""
+    global _LLAMA_CLIENT, _LLAMA_OK
+    if _LLAMA_CLIENT is None:
+        try:
+            _LLAMA_CLIENT = _LlamaClientForRAG()
+            _LLAMA_OK = True
+        except Exception as e:
+            print(f"[RAG] Llama client init failed: {e}")
+            _LLAMA_OK = False
+    return _LLAMA_CLIENT if _LLAMA_OK else None
+
 _RAG_ANSWER_MODEL = os.getenv("RAG_LLM_MODEL", settings.GPT_MODEL_NAME)
 _RAG_CHECK_MODEL  = os.getenv("RAG_INSUFFICIENCY_CHECK_MODEL", _RAG_ANSWER_MODEL)
+
+# Global backend selector (can be changed at runtime)
+_ACTIVE_BACKEND = "openai"  # "openai" or "llama"
+
+def set_llm_backend(backend: str):
+    """Set active LLM backend: 'openai' or 'llama'"""
+    global _ACTIVE_BACKEND
+    _ACTIVE_BACKEND = backend.lower()
+    print(f"[RAG] LLM backend set to: {_ACTIVE_BACKEND}")
+
+
+# ======================================================================================
+# Unified LLM call function (supports OpenAI and Llama backends)
+# ======================================================================================
+@retry(
+    retry=retry_if_exception_type(_RETRY_EXCEPTIONS),
+    wait=wait_exponential(multiplier=1, min=1, max=16),
+    stop=stop_after_attempt(5),
+    reraise=True,
+)
+def _call_openai_chat(**kwargs):
+    # Use Llama backend if configured
+    if _ACTIVE_BACKEND == "llama":
+        client = _get_llama_client()
+        if client is not None:
+            # Remove response_format for Llama (not supported)
+            kwargs.pop("response_format", None)
+            response = client.chat_completion(**kwargs)
+            _track_llama_usage(response)
+            return response
+        print("[RAG] Llama unavailable, falling back to OpenAI")
+    return _OPENAI_CLIENT.chat.completions.create(**kwargs)
 
 
 def _strip_doi_prefix(query: str) -> str:
@@ -102,19 +214,79 @@ def _normalize_doi(doi_str: str) -> str:
     return s.lower().strip()
 
 
+def _normalize_units(text: str) -> str:
+    """Normalize unit symbols for consistent matching.
+
+    Handles variations like:
+    - dec-1, dec−1, dec–1, dec⁻¹ → dec-1
+    - mV/dec, mV dec-1 → mV dec-1
+    - °C, ℃ → C
+    - cm-2, cm−2, cm⁻² → cm-2
+    """
+    s = text.strip().lower()
+    # Normalize various minus signs to standard hyphen
+    s = re.sub(r'[−–—⁻]', '-', s)
+    # Normalize superscript numbers
+    s = s.replace('⁻¹', '-1').replace('⁻²', '-2')
+    s = s.replace('¹', '1').replace('²', '2')
+    # Normalize degree symbols
+    s = s.replace('°c', 'c').replace('℃', 'c').replace('° c', 'c')
+    # Remove extra spaces
+    s = re.sub(r'\s+', ' ', s)
+    return s
+
+
 def _doi_match(response: str, expected: str) -> bool:
-    """Check if expected DOI is found in the response."""
-    norm_expected = _normalize_doi(expected)
-    if not norm_expected:
+    """Check if expected answer is found in the response.
+
+    Supports both DOI matching and general value matching with unit normalization.
+    """
+    if not expected or not response:
         return False
-    if norm_expected in _normalize_doi(response):
+
+    # Normalize both for comparison
+    norm_expected = _normalize_units(expected)
+    norm_response = _normalize_units(response)
+
+    # Direct substring match with normalized units
+    if norm_expected in norm_response:
+        return True
+
+    # Extract numeric value for comparison (e.g., "120" from "120 °C")
+    exp_nums = re.findall(r'[\d.]+', norm_expected)
+    if exp_nums:
+        # Check if the main numeric value appears in response
+        main_num = exp_nums[0]
+        # Look for the number with similar context (temperature, mV, etc.)
+        if main_num in norm_response:
+            # Additional validation: check unit context
+            exp_has_temp = 'c' in norm_expected or 'k' in norm_expected
+            exp_has_mv = 'mv' in norm_expected
+            exp_has_dec = 'dec' in norm_expected
+
+            resp_has_temp = 'c' in norm_response or 'k' in norm_response
+            resp_has_mv = 'mv' in norm_response
+            resp_has_dec = 'dec' in norm_response
+
+            # If same unit type context, consider it a match
+            if (exp_has_temp and resp_has_temp) or \
+               (exp_has_mv and resp_has_mv) or \
+               (exp_has_dec and resp_has_dec):
+                # Verify the exact number appears as a standalone value
+                if re.search(rf'\b{re.escape(main_num)}\b', norm_response):
+                    return True
+
+    # Legacy DOI matching
+    norm_doi_expected = _normalize_doi(expected)
+    if norm_doi_expected and norm_doi_expected in _normalize_doi(response):
         return True
     for doi in re.findall(r"10\.\d{4,}(?:\.\d+)*/[^\s,;)\]\"']+", response):
-        if _normalize_doi(doi) == norm_expected:
+        if _normalize_doi(doi) == norm_doi_expected:
             return True
     for url in re.findall(r"nature\.com/articles/[^\s,;)\]\"']+", response):
-        if _normalize_doi(url) == norm_expected:
+        if _normalize_doi(url) == norm_doi_expected:
             return True
+
     return False
 
 
@@ -136,74 +308,62 @@ def _read_questions_from_csv(csv_path: str) -> List[Dict[str, str]]:
 # Descriptive-mode parsing & evaluation (RAGAS)
 # ======================================================================================
 def _extract_response_parts(response: str) -> Dict[str, str]:
+    """Extract reference paragraph and answer from LLM response."""
     result = {"context": "", "answer": ""}
     if not response:
         return result
-    cm = re.search(r"Context:\s*(.*?)(?=Answer:|$)", response, re.DOTALL | re.IGNORECASE)
-    if cm:
-        result["context"] = cm.group(1).strip()
-    am = re.search(r"Answer:\s*(.*?)$", response, re.DOTALL | re.IGNORECASE)
-    if am:
-        result["answer"] = am.group(1).strip()
+
+    context_match = re.search(r"References:\s*(.*?)(?=Answer:|$)", response, re.DOTALL)
+    if context_match:
+        result["context"] = context_match.group(1).strip()
+
+    answer_match = re.search(r"Answer:\s*(.*?)$", response, re.DOTALL)
+    if answer_match:
+        result["answer"] = answer_match.group(1).strip()
     else:
-        parts = re.split(r"Context:\s*", response, flags=re.IGNORECASE)
-        result["answer"] = parts[1].strip() if len(parts) > 1 else response.strip()
+        parts = response.split("References:")
+        if len(parts) > 1:
+            after_context = parts[1].strip()
+            after_tags = re.split(r"\n(?:References:)", after_context)
+            if after_tags:
+                result["answer"] = after_tags[-1].strip()
+        else:
+            result["answer"] = response.strip()
+
     return result
 
 
 # ======================================================================================
-# Insufficient-information handling (rule + optional LLM re-check)
+# Insufficient-information handling (matching reference code exactly)
 # ======================================================================================
 def _handle_insufficient_info(
     question: str,
     answer: str,
     context: Any,
-    use_llm_recheck: bool = True
 ) -> Optional[Dict[str, float]]:
-    insufficient_keywords = [
-        "insufficient information",
-        "not enough information",
-        "information not available",
-        "cannot determine",
-        "unknown",
-        "insufficient"
-    ]
-    ans = (answer or "").strip()
-    ctx = context if isinstance(context, str) else ("" if context is None else str(context))
+    """Handle cases with insufficient information or empty answers.
 
-    keyword_hit = (not ans) or any(k in ans.lower() for k in insufficient_keywords) or (not ctx.strip())
-    if not keyword_hit:
-        return None
+    Sets faithfulness=1.0 for these cases (no hallucination when no info).
+    """
+    insufficient_keywords = ["insufficient information", "insufficient", "not enough", "정보 부족", "정보부족", "정보 없음"]
 
-    if use_llm_recheck and _OPENAI_OK:
-        try:
-            prompt = (
-                "Return STRICT JSON with a single boolean field: {\"is_insufficient\": true/false}.\n\n"
-                f"Question:\n{question}\n\n"
-                f"Context:\n{ctx[:4000]}\n\n"
-                f"Proposed Answer:\n{ans}\n\n"
-                "Decision rule:\n"
-                "- true  if the context does NOT provide enough information to answer the question faithfully.\n"
-                "- false if the answer can be supported by the context.\n"
-            )
-            resp = _call_openai_chat(
-                model=_RAG_CHECK_MODEL,
-                temperature=0,
-                max_tokens=64,
-                messages=[
-                    {"role": "system", "content": "You return strict JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-                top_p=1
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            is_true = "true" in content.lower().replace(" ", "")
-            if not is_true:
-                return None
-        except Exception:
-            pass
+    if any(keyword in answer.lower() for keyword in insufficient_keywords) or not answer.strip():
+        print(f"    [insufficient-check] Insufficient info detected: faithfulness=1.0")
+        return {
+            "faithfulness": 1.0,
+            "answer_relevancy": 0.0,
+            "ContextRelevance": 0.0
+        }
 
-    return {"faithfulness": 1.0, "answer_relevancy": 0.0, "ContextRelevance": 0.0}
+    if not context or (isinstance(context, str) and not context.strip()):
+        print(f"    [insufficient-check] No context: faithfulness=1.0")
+        return {
+            "faithfulness": 1.0,
+            "answer_relevancy": 0.0,
+            "ContextRelevance": 0.0
+        }
+
+    return None
 
 
 # ======================================================================================
@@ -279,26 +439,36 @@ Return STRICT JSON:
         return query
 
 def _gpt_generate_basic_answer(query: str, context_blocks: List[str]) -> str:
-    joined = "\n\n".join(context_blocks or [])
+    """Generate answer using the same prompt format as reference code."""
+    joined = "\n\n====================\n\n".join(context_blocks or [])
+    # DEBUG: Check if context is empty
+    print(f"    [DEBUG] context_blocks count: {len(context_blocks or [])}, joined length: {len(joined)}")
+    if context_blocks:
+        print(f"    [DEBUG] First block preview: {(context_blocks[0][:200] + '...') if len(context_blocks[0]) > 200 else context_blocks[0]}")
     if not _OPENAI_OK:
         return "Insufficient information"
-    system = (
-        "You are a scientific literature analysis assistant. "
-        "Answer based only on the provided information. "
-        "Do not guess or speculate on uncertain content."
-    )
-    user = (
-        f"The following is document information related to the user's question:\n\n"
-        f"{joined}\n\n"
-        f"Based on the above information, please answer the following question.\n"
-        f"If the information is insufficient, honestly answer 'Insufficient information'.\n\n"
-        f"User question: {query}"
-    )
+    # System prompt matching reference code
+    system = "You are an expert assistant analyzing scientific literature to answer questions. Answer based ONLY on the provided information, do not guess if you are unsure."
+    # User prompt matching reference code format
+    user = f"""Below is document information related to the user's question:
+
+{joined}
+
+Based on the information above, please answer the following question.
+If the information is sufficient, provide the reference paragraphs along with your answer. Only output the paragraphs that were directly used to formulate the answer.
+If there is not enough information, honestly answer "Insufficient information".
+
+"Answer format:
+References:
+Answer:
+"
+
+User question: {{query}}"""
     try:
         resp = _call_openai_chat(
             model=_RAG_ANSWER_MODEL,
             temperature=0,
-            max_tokens=1000,
+            max_tokens=3000,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -313,7 +483,8 @@ def _gpt_generate_advanced_answer(
     sub_queries: List[str],
     paragraphs: List[Dict[str, Any]],
     base_rag: Optional[_BaseRAG] = None,
-) -> str:
+) -> Tuple[str, List[str]]:
+    """Returns (answer, context_parts_used_for_llm). Uses same prompt format as reference code."""
     processed_doc_ids = set()
     context_parts: List[str] = []
     fetch_full = getattr(base_rag, "_fetch_full_document", None) if base_rag else None
@@ -335,52 +506,59 @@ def _gpt_generate_advanced_answer(
         context_parts.append(chunk)
     joined = "\n\n====================\n\n".join(context_parts)
     if not _OPENAI_OK:
-        return "Insufficient information"
-    system = (
-        "You are a scientific literature analysis assistant. "
-        "Provide comprehensive answers based only on the provided information. "
-        "Do not guess or speculate on uncertain content."
-    )
-    subqueries_text = "This question was decomposed into the following sub-questions:\n"
+        return "Insufficient information", context_parts
+    # System prompt matching reference code
+    system = "You are an expert assistant analyzing scientific literature to answer questions. Answer based ONLY on the provided information, do not guess if you are unsure."
+    # Subqueries text matching reference code
+    subqueries_text = "This question was decomposed into the following sub-queries for retrieval:\n"
     for i, sq in enumerate(sub_queries, 1):
         subqueries_text += f"{i}. {sq}\n"
-    subqueries_text += "\nPlease synthesize the information from each sub-question to provide a final answer.\n\n"
-    user = (
-        f"The following is document information related to the user's question:\n\n"
-        f"{joined}\n\n"
-        f"{subqueries_text}"
-        f"Based on the above information, please answer the following question.\n"
-        f"Comprehensively analyze the relevant content from each retrieved document "
-        f"to provide a consistent and thorough answer.\n"
-        f"If the information is insufficient, honestly answer 'Insufficient information'.\n\n"
-        f"User question: {query}"
-    )
+    subqueries_text += "\nSynthesize information relevant to each sub-query to provide the final answer.\n\n"
+    # User prompt matching reference code format
+    user = f"""Below is document information related to the user's question:
+
+{joined}
+
+{subqueries_text}Based on the information above, please answer the following question.
+If the information is sufficient, provide the reference paragraphs along with your answer. Only output the paragraphs that were directly used to formulate the answer.
+If there is not enough information, honestly answer "Insufficient information".
+
+"Answer format:
+References:
+Answer:
+"
+
+User question: {{query}}"""
     try:
         resp = _call_openai_chat(
             model=_RAG_ANSWER_MODEL,
             temperature=0,
-            max_tokens=1500,
+            max_tokens=3000,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         )
-        return resp.choices[0].message.content or "Insufficient information"
+        return resp.choices[0].message.content or "Insufficient information", context_parts
     except Exception:
-        return "Insufficient information"
+        return "Insufficient information", context_parts
 
 
 # ======================================================================================
-# RAGAS single-sample evaluation (version-compatible)
+# RAGAS single-sample evaluation (version-compatible, matching reference code)
 # ======================================================================================
 def _ragas_eval(question: str, answer: str, context: Any) -> Dict[str, float]:
-    preset = _handle_insufficient_info(question, answer, context, use_llm_recheck=True)
-    if preset is not None:
-        return preset
+    """Perform RAGAS evaluation. Checks for insufficient info first."""
+    print(f"    [RAGAS] Running evaluation...")
 
-    if ragas_evaluate is None or Dataset is None or _CONTEXT_METRIC is None:
+    insufficient_result = _handle_insufficient_info(question, answer, context)
+    if insufficient_result is not None:
+        return insufficient_result
+
+    if not _RAGAS_AVAILABLE or ragas_evaluate is None or Dataset is None or _CONTEXT_METRIC is None:
         return {"error": "RAGAS dependencies are not available."}
 
+    # Helper: contexts를 List[List[str]]로 표준화
     def _to_nested_list(ctx: Any) -> List[List[str]]:
         if isinstance(ctx, str):
             return [[ctx]]
@@ -393,41 +571,109 @@ def _ragas_eval(question: str, answer: str, context: Any) -> Dict[str, float]:
                 return ctx
         return [[str(ctx)]]
 
-    ds = Dataset.from_dict({
-        "question": [question],
-        "answer": [answer or ""],
-        "contexts": _to_nested_list(context or ""),
-    })
-
-    def _to_float(v):
+    # Helper: 다양한 형식의 점수를 float로 추출 (NaN 처리)
+    def _to_float(val: Any) -> float:
         try:
-            if isinstance(v, (int, float)):
-                return 0.0 if math.isnan(v) else float(v)
-            if isinstance(v, list) and v:
-                x = float(v[0]);  return 0.0 if math.isnan(x) else x
-            if isinstance(v, dict) and "score" in v:
-                x = float(v["score"]);  return 0.0 if math.isnan(x) else x
-            return float(v)
-        except Exception:
+            if isinstance(val, (int, float)):
+                return 0.0 if math.isnan(val) else float(val)
+            if isinstance(val, list) and val:
+                x = float(val[0])
+                return 0.0 if math.isnan(x) else x
+            if isinstance(val, dict) and "score" in val:
+                x = float(val["score"])
+                return 0.0 if math.isnan(x) else x
+            return float(val)
+        except (ValueError, TypeError):
             return 0.0
 
-    def _pick_ctx_score(scores: dict) -> float:
-        for k in ("ContextRelevance", "context_relevancy", "context_relevance", "nv_context_relevance"):
-            if k in scores:
-                return _to_float(scores[k])
-        return 0.0
-
     try:
-        raw = ragas_evaluate(ds, metrics=[faithfulness, answer_relevancy, _CONTEXT_METRIC])
-        scores_dict = raw.scores if hasattr(raw, "scores") else raw
-        scores = {
-            "faithfulness":     _to_float(scores_dict.get("faithfulness", scores_dict.get("Faithfulness", 0.0))),
-            "answer_relevancy": _to_float(scores_dict.get("answer_relevancy", scores_dict.get("answer_relevance", 0.0))),
-            "ContextRelevance": _pick_ctx_score(scores_dict),
+        answer = answer or "Insufficient information"
+        contexts_nested = _to_nested_list(context or "Insufficient information")
+
+        ds = Dataset.from_dict({
+            "question": [question],
+            "answer": [answer],
+            "contexts": contexts_nested,
+        })
+
+        # Use explicit LLM and embeddings (consistent with reference code)
+        llm = ChatOpenAI(model=_RAG_ANSWER_MODEL, temperature=0)
+        embeddings = OpenAIEmbeddings()
+        metrics = [faithfulness, answer_relevancy, _CONTEXT_METRIC]
+
+        raw = ragas_evaluate(
+            ds,
+            metrics=metrics,
+            llm=llm,
+            embeddings=embeddings,
+            run_config=RunConfig(timeout=90),
+        )
+
+        # Handle different RAGAS return types (matching reference code)
+        if isinstance(raw, dict):
+            raw_dict = raw
+        elif hasattr(raw, "metric_results"):
+            raw_dict = {mr.metric.name: mr.score for mr in raw.metric_results}
+        elif hasattr(raw, "scores"):
+            scores = raw.scores
+            if isinstance(scores, dict):
+                raw_dict = scores
+            else:  # list
+                raw_dict = {
+                    metrics[i].name if hasattr(metrics[i], "name")
+                    else metrics[i].__name__: scores[i]
+                    for i in range(len(scores))
+                }
+        elif hasattr(raw, "to_pandas"):
+            # RAGAS 0.2+ returns EvaluationResult with to_pandas()
+            df = raw.to_pandas()
+            raw_dict = df.iloc[0].to_dict() if len(df) > 0 else {}
+        else:
+            raise ValueError("Unknown RAGAS result format")
+
+        # Metric name standardization (matching reference code)
+        rename = {
+            "context_relevance":    "ContextRelevance",
+            "context_relevancy":    "ContextRelevance",
+            "context_precision":    "ContextRelevance",
+            "nv_context_relevance": "ContextRelevance",
+            "ContextRelevance":     "ContextRelevance",
+            "faithfulness":         "faithfulness",
+            "Faithfulness":         "faithfulness",
+            "answer_relevancy":     "answer_relevancy",
+            "answer_relevance":     "answer_relevancy",
         }
-        return scores
+
+        results = {}
+        for k, v in raw_dict.items():
+            # Handle sub-metric dict (no 'score' key)
+            if isinstance(v, dict) and "score" not in v:
+                for sub_k, sub_v in v.items():
+                    std_k = rename.get(sub_k, sub_k)
+                    results[std_k] = _to_float(sub_v)
+            else:
+                std_k = rename.get(k, k)
+                results[std_k] = _to_float(v)
+
+        # Fill missing required metrics with 0.0
+        for req in ("faithfulness", "answer_relevancy", "ContextRelevance"):
+            results.setdefault(req, 0.0)
+
+        # Handle NaN faithfulness as 1.0 (no hallucination if no info)
+        if math.isnan(results.get("faithfulness", 0.0)):
+            print(f"    [RAGAS] faithfulness NaN -> 1.0")
+            results["faithfulness"] = 1.0
+
+        return results
+
     except Exception as e:
-        return {"error": str(e)}
+        print(f"    [RAGAS] Error: {e}")
+        return {
+            "faithfulness": 1.0,
+            "answer_relevancy": 0.0,
+            "ContextRelevance": 0.0,
+            "error": str(e)
+        }
 
 
 # ======================================================================================
@@ -530,13 +776,14 @@ class _BaseRAG:
     def _llm_answer(self, query: str, blocks: List[str], strict_unknown: bool = True) -> str:
         return _gpt_generate_basic_answer(query, blocks)
 
-    def answer(self, query: str, top_k: int = 5, rewritten: Optional[str] = None) -> tuple[str, List[Dict[str, Any]]]:
+    def answer(self, query: str, top_k: int = 5, rewritten: Optional[str] = None) -> tuple[str, List[Dict[str, Any]], List[str]]:
+        """Returns (response, retrieved_paragraphs, context_blocks_used_for_llm)."""
         q = rewritten if rewritten else query
         paras = self._dense_retrieve(q, top_k=top_k)
         doc_ids = list({p.get("doc_id") for p in paras if p.get("doc_id")})
         blocks = self._build_context_blocks(doc_ids)
         resp = self._llm_answer(query, blocks, strict_unknown=True)
-        return resp, paras
+        return resp, paras, blocks
 
 
 # ======================================================================================
@@ -765,6 +1012,8 @@ class JSONCRAG(_ChromaMixin, _BaseRAG):
     """Conventional RAG on JSON corpus: dense-only retrieval."""
     def __init__(self):
         super().__init__()
+        print(f"[JSONCRAG] Initializing with collection={settings.RAG_JSON_COLLECTION}, "
+              f"persist_dir={settings.RAG_JSON_PERSIST_DIR}")
         self._init_chroma(
             settings.RAG_JSON_COLLECTION,
             str(settings.RAG_JSON_PERSIST_DIR),
@@ -773,6 +1022,7 @@ class JSONCRAG(_ChromaMixin, _BaseRAG):
             data_path=str(settings.RAG_JSON_DATA_PATH),
             data_format="json",
         )
+        print(f"[JSONCRAG] Collection count: {self._collection.count()}")
 
     def _dense_retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         res = self._collection.query(
@@ -820,13 +1070,14 @@ class QRRAGWrapper:
         self.base = base
         self.fmt = fmt
 
-    def answer(self, query: str, top_k: int = 5, rewritten: Optional[str] = None) -> tuple[str, List[Dict[str, Any]]]:
+    def answer(self, query: str, top_k: int = 5, rewritten: Optional[str] = None) -> tuple[str, List[Dict[str, Any]], List[str]]:
+        """Returns (response, retrieved_paragraphs, context_blocks_used_for_llm)."""
         q = rewritten if rewritten else query
         paras = self.base.hybrid_retrieve(q, top_k=top_k, bm25_weight=0.5)
         doc_ids = list({p.get("doc_id") for p in paras if p.get("doc_id")})
         blocks = self.base._build_context_blocks(doc_ids)
         resp = self.base._llm_answer(query, blocks, strict_unknown=True)
-        return resp, paras
+        return resp, paras, blocks
 
 
 # ======================================================================================
@@ -846,6 +1097,7 @@ class UnifiedRAG:
         self,
         dataset_format: Literal["json", "html"] = "json",
         retrieval: Literal["c-rag", "qr-rag", "baseline", "advanced"] = "c-rag",
+        csv_path: Optional[str] = None,
     ):
         self.dataset_format = dataset_format
         retrieval = {"baseline": "c-rag", "advanced": "qr-rag"}.get(retrieval, retrieval)
@@ -854,7 +1106,7 @@ class UnifiedRAG:
             self._base = JSONCRAG()
         else:
             self._base = HTMLCRAG()
-        self.csv_path = settings.RAG_QA_CSV_PATH
+        self.csv_path = csv_path or settings.RAG_QA_CSV_PATH
         self._runner = QRRAGWrapper(self._base, dataset_format) if retrieval == "qr-rag" else self._base
 
     @staticmethod
@@ -899,58 +1151,128 @@ class UnifiedRAG:
                 pass
         return False
 
+    @staticmethod
+    def _format_retrieved_paragraphs(retrieved: List[Dict[str, Any]], gold_answer: str = "") -> Dict[str, Any]:
+        """Format retrieved paragraphs for analysis-friendly output."""
+        formatted = []
+        gold_doc_id = ""
+        gold_rank = -1
+
+        # Extract gold doc_id from DOI if possible
+        if gold_answer:
+            norm_gold = _normalize_doi(gold_answer)
+
+        for rank, para in enumerate(retrieved, 1):
+            doc_id = para.get("doc_id", "")
+            score = para.get("score", 0.0)
+            text = para.get("text", "")
+            section = para.get("section", "")
+            para_idx = para.get("paragraph_idx", -1)
+
+            # Check if this document contains the gold DOI
+            is_gold = False
+            if gold_answer and doc_id:
+                # Check if doc_id matches or contains the gold DOI pattern
+                if _normalize_doi(doc_id) == norm_gold or norm_gold in doc_id.lower():
+                    is_gold = True
+                    gold_rank = rank
+
+            formatted.append({
+                "rank": rank,
+                "doc_id": doc_id,
+                "similarity_score": round(score, 4),
+                "section": section,
+                "paragraph_idx": para_idx,
+                "text": text,
+                "text_length": len(text),
+                "is_gold_document": is_gold,
+            })
+
+        return {
+            "top_k_paragraphs": formatted,
+            "gold_in_top_k": gold_rank > 0,
+            "gold_rank": gold_rank if gold_rank > 0 else None,
+            "unique_documents": list({p.get("doc_id") for p in retrieved if p.get("doc_id")}),
+            "num_unique_documents": len({p.get("doc_id") for p in retrieved if p.get("doc_id")}),
+        }
+
     def _process_one_crag(self, query: str, answer: str, top_k: int, eval_mode: str) -> Dict[str, Any]:
         start = time.time()
-        resp, retrieved = self._base.answer(query, top_k=top_k)
+        # answer() now returns (response, retrieved_paragraphs, context_blocks)
+        resp, retrieved, context_blocks = self._base.answer(query, top_k=top_k)
+
+        # Format retrieval results
+        retrieval_info = self._format_retrieved_paragraphs(retrieved, answer)
+
         item: Dict[str, Any] = {
             "question": query,
             "expected_answer": answer,
             "response": resp,
-            "retrieved_documents": list({p.get("doc_id") for p in retrieved if p.get("doc_id")}),
-            "retrieved_paragraphs": retrieved,
+            "retrieval": retrieval_info,
         }
 
         if eval_mode == "doi":
-            item["is_correct"] = _doi_match(resp or "", answer or "")
+            is_correct = _doi_match(resp or "", answer or "")
+            item["evaluation"] = {
+                "is_correct": is_correct,
+                "gold_in_top_k": retrieval_info["gold_in_top_k"],
+                "gold_rank": retrieval_info["gold_rank"],
+            }
         else:
-            parts = _extract_response_parts(resp)
-            ans = parts.get("answer", "")
-            ctx = parts.get("context", "")
-            ragas_scores = _ragas_eval(query, ans, ctx)
-            item["extracted_answer"] = ans
-            item["context"] = ctx
+            # Extract '참고 문단' and '답변' from LLM response (matching reference code)
+            response_parts = _extract_response_parts(resp)
+            extracted_answer = response_parts["answer"]
+            extracted_context = response_parts["context"]
+
+            # RAGAS 평가 수행 (using extracted answer/context like reference code)
+            ragas_scores = _ragas_eval(query, extracted_answer, extracted_context)
+            item["extracted_answer"] = extracted_answer
+            item["context"] = extracted_context
             item["ragas_results"] = ragas_scores
 
-        item["execution_time"] = time.time() - start
+        item["execution_time_sec"] = round(time.time() - start, 2)
         return item
 
     def _process_one_qrrag(self, query: str, answer: str, top_k: int, eval_mode: str) -> Dict[str, Any]:
         start = time.time()
         search_query = _strip_doi_prefix(query)
         rewritten = _gpt_rewrite_query(search_query)
-        resp, retrieved = self._runner.answer(query, top_k=top_k, rewritten=rewritten)
+        # answer() now returns (response, retrieved_paragraphs, context_blocks)
+        resp, retrieved, context_blocks = self._runner.answer(query, top_k=top_k, rewritten=rewritten)
+
+        # Format initial retrieval results
+        retrieval_info = self._format_retrieved_paragraphs(retrieved, answer)
 
         item: Dict[str, Any] = {
             "question": query,
             "expected_answer": answer,
             "response": resp,
-            "rewritten_query": rewritten,
-            "retrieved_documents": list({p.get("doc_id") for p in retrieved if p.get("doc_id")}),
-            "retrieved_paragraphs": retrieved,
-            "is_basic_sufficient": True,
-            "is_decomposed": False,
+            "query_reformulation": {
+                "original_query": query,
+                "search_query": search_query,
+                "rewritten_query": rewritten,
+            },
+            "retrieval": retrieval_info,
+            "decomposition": {
+                "is_basic_sufficient": True,
+                "is_decomposed": False,
+                "sub_queries": None,
+            },
         }
 
+        # Track which context_blocks to use for RAGAS (may be updated if decomposition happens)
+        ragas_context = context_blocks
+
         is_insufficient = self._detect_insufficiency(resp)
-        item["is_basic_sufficient"] = not is_insufficient
+        item["decomposition"]["is_basic_sufficient"] = not is_insufficient
 
         if is_insufficient:
             sub_queries = _gpt_decompose_query(search_query)
             if len(sub_queries) == 1 and sub_queries[0] == search_query:
                 pass
             else:
-                item["is_decomposed"] = True
-                item["sub_queries"] = sub_queries
+                item["decomposition"]["is_decomposed"] = True
+                item["decomposition"]["sub_queries"] = sub_queries
 
                 all_paras = list(retrieved)
                 seen = {p.get("doc_id") for p in retrieved if p.get("doc_id")}
@@ -963,25 +1285,37 @@ class UnifiedRAG:
                             all_paras.append(p)
                             seen.add(did)
 
-                adv_answer = _gpt_generate_advanced_answer(query, sub_queries, all_paras, base_rag=self._base)
-                item["response"] = adv_answer
+                # _gpt_generate_advanced_answer now returns (answer, context_parts)
+                adv_answer, adv_context = _gpt_generate_advanced_answer(query, sub_queries, all_paras, base_rag=self._base)
                 item["basic_response"] = resp
-                item["retrieved_documents"] = list({p.get("doc_id") for p in all_paras if p.get("doc_id")})
-                item["retrieved_paragraphs"] = all_paras
+                item["response"] = adv_answer
+                ragas_context = adv_context  # Use the context from advanced answer
+
+                # Update retrieval info with expanded results
+                item["retrieval"] = self._format_retrieved_paragraphs(all_paras, answer)
+                item["retrieval"]["expanded_by_decomposition"] = True
 
         final_resp = item["response"]
         if eval_mode == "doi":
-            item["is_correct"] = _doi_match(final_resp or "", answer or "")
+            is_correct = _doi_match(final_resp or "", answer or "")
+            item["evaluation"] = {
+                "is_correct": is_correct,
+                "gold_in_top_k": item["retrieval"]["gold_in_top_k"],
+                "gold_rank": item["retrieval"]["gold_rank"],
+            }
         else:
-            parts = _extract_response_parts(final_resp)
-            ans = parts.get("answer", "")
-            ctx = parts.get("context", "")
-            ragas_scores = _ragas_eval(query, ans, ctx)
-            item["extracted_answer"] = ans
-            item["context"] = ctx
+            # Extract '참고 문단' and '답변' from LLM response (matching reference code)
+            response_parts = _extract_response_parts(final_resp)
+            extracted_answer = response_parts["answer"]
+            extracted_context = response_parts["context"]
+
+            # RAGAS 평가 수행 (using extracted answer/context like reference code)
+            ragas_scores = _ragas_eval(query, extracted_answer, extracted_context)
+            item["extracted_answer"] = extracted_answer
+            item["context"] = extracted_context
             item["ragas_results"] = ragas_scores
 
-        item["execution_time"] = time.time() - start
+        item["execution_time_sec"] = round(time.time() - start, 2)
         return item
 
     def process_one(self, query: str, answer: str, top_k: int = 5, eval_mode: str = "doi") -> Dict[str, Any]:
@@ -997,6 +1331,9 @@ class UnifiedRAG:
         eval_mode: Literal["doi", "descriptive"] = "doi",
         top_k: int = 5,
     ):
+        # Reset Llama usage tracking at start
+        reset_llama_usage()
+
         qs = _read_questions_from_csv(self.csv_path)
         n = len(qs)
         print(f"[RAG] loaded {n} questions from {self.csv_path}")
@@ -1050,22 +1387,31 @@ class UnifiedRAG:
             eta_done = f"{rm}m {rs:02d}s left" if i < n else "done"
             print(f"\r  [{bar_done}] {pct_done*100:5.1f}%  ({i}/{n})  {eta_done}      ", flush=True)
 
-            # --- DEBUG: 질문/응답/정답 출력 (임시) ---
-            _resp = item.get("response") or ""
-            _exp = item.get("expected_answer") or ""
-            _ok = item.get("is_correct", False)
-            _mark = "O" if _ok else "X"
-            print(f"    [{_mark}] Q: {query}")
-            print(f"        Response: {_resp}")
-            print(f"        Expected: {_exp}")
-            if item.get("is_decomposed"):
-                _suff = item.get("is_basic_sufficient", True)
-                print(f"        basic_sufficient: {_suff} -> decomposed: True")
-            print()
-            # --- END DEBUG ---
+            # === DEBUG OUTPUT ===
+            if eval_mode == "doi":
+                is_correct = item.get("evaluation", {}).get("is_correct", False)
+                response_text = (item.get("response") or "")[:1200].replace("\n", " ")
+                print(f"\n    [Q{i}] {'✓ CORRECT' if is_correct else '✗ WRONG'}")
+                print(f"    Question: {query[:300]}{'...' if len(query) > 300 else ''}")
+                print(f"    Expected: {gold}")
+                print(f"    Response: {response_text}{'...' if len(item.get('response') or '') > 1200 else ''}")
+                print()
+            else:
+                # descriptive mode: show RAGAS scores
+                rr = item.get("ragas_results", {})
+                if rr and "error" not in rr:
+                    faith = rr.get("faithfulness", 0.0)
+                    relevancy = rr.get("answer_relevancy", 0.0)
+                    ctx_rel = rr.get("ContextRelevance", 0.0)
+                    print(f"\n    [Q{i}] Faith={faith:.3f} | Relevancy={relevancy:.3f} | CtxRel={ctx_rel:.3f}")
+                else:
+                    err_msg = rr.get("error", "unknown") if rr else "no result"
+                    print(f"\n    [Q{i}] RAGAS error: {err_msg}")
+                print(f"    Question: {query[:200]}{'...' if len(query) > 200 else ''}")
+                print()
 
             if eval_mode == "doi":
-                ok = item.get("is_correct", False)
+                ok = item.get("evaluation", {}).get("is_correct", False)
                 by_cond[cond]["total"] += 1
                 by_cond[cond]["correct"] += int(bool(ok))
             else:
@@ -1089,29 +1435,85 @@ class UnifiedRAG:
             correct = sum(v["correct"] for v in by_cond.values())
             acc = (correct / total) if total else 0.0
 
-            print("\n" + "=" * 50)
-            print(f"  {self.dataset_format.upper()} / {self.retrieval.upper()}  DOI Evaluation")
-            print("=" * 50)
-            print(f"  Overall Accuracy : {round(acc * 100, 1)}%  ({correct}/{total})")
-            print("-" * 50)
+            # Calculate retrieval statistics
+            gold_in_top_k_count = sum(
+                1 for r in results
+                if r.get("evaluation", {}).get("gold_in_top_k", False)
+            )
+            retrieval_recall = (gold_in_top_k_count / total) if total else 0.0
+
+            # Calculate average gold rank (only for items where gold was found)
+            gold_ranks = [
+                r.get("evaluation", {}).get("gold_rank")
+                for r in results
+                if r.get("evaluation", {}).get("gold_rank") is not None
+            ]
+            avg_gold_rank = (sum(gold_ranks) / len(gold_ranks)) if gold_ranks else None
+
+            print("\n" + "=" * 70)
+            print(f"  {self.dataset_format.upper()} / {self.retrieval.upper()}  DOI Evaluation Results")
+            print("=" * 70)
+            print(f"  Overall Accuracy     : {round(acc * 100, 1)}%  ({correct}/{total})")
+            print(f"  Retrieval Recall@{top_k}  : {round(retrieval_recall * 100, 1)}%  ({gold_in_top_k_count}/{total})")
+            if avg_gold_rank:
+                print(f"  Avg Gold Rank        : {round(avg_gold_rank, 2)}")
+            print("-" * 70)
+            print("  By Condition:")
             for c in sorted(by_cond.keys()):
                 v = by_cond[c]
                 c_acc = (v["correct"] / v["total"]) if v["total"] else 0.0
-                print(f"  condition={c:<10} {round(c_acc * 100, 1)}%  ({v['correct']}/{v['total']})")
-            print("=" * 50)
+                print(f"    {c:<12} : {round(c_acc * 100, 1)}%  ({v['correct']}/{v['total']})")
+            print("-" * 70)
+            # Llama cost tracking
+            llama_usage = get_llama_usage()
+            if llama_usage["total_tokens"] > 0:
+                print("  Llama API Usage:")
+                print(f"    Prompt tokens      : {llama_usage['prompt_tokens']:,}")
+                print(f"    Completion tokens  : {llama_usage['completion_tokens']:,}")
+                print(f"    Total tokens       : {llama_usage['total_tokens']:,}")
+                print(f"    Estimated cost     : ${llama_usage['cost_total_usd']:.4f}")
+            print("=" * 70)
+
+            # Build professional output structure
+            llama_usage = get_llama_usage()
+            output = {
+                "metadata": {
+                    "experiment_name": f"{self.dataset_format}-{self.retrieval}",
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "evaluation_mode": eval_mode,
+                    "dataset_format": self.dataset_format,
+                    "retrieval_method": self.retrieval,
+                    "top_k": top_k,
+                    "total_questions": total,
+                    "llm_backend": _ACTIVE_BACKEND,
+                },
+                "llama_cost": llama_usage if llama_usage["total_tokens"] > 0 else None,
+                "summary": {
+                    "overall_accuracy": {
+                        "percentage": round(acc * 100, 2),
+                        "correct": correct,
+                        "total": total,
+                    },
+                    "retrieval_performance": {
+                        "recall_at_k": round(retrieval_recall * 100, 2),
+                        "gold_found_in_top_k": gold_in_top_k_count,
+                        "average_gold_rank": round(avg_gold_rank, 2) if avg_gold_rank else None,
+                    },
+                    "by_condition": {
+                        cond: {
+                            "accuracy_pct": round((v["correct"] / v["total"]) * 100, 2) if v["total"] else 0.0,
+                            "correct": v["correct"],
+                            "total": v["total"],
+                        }
+                        for cond, v in by_cond.items()
+                    },
+                },
+                "results": results,
+            }
 
             out_json = os.path.join(out_dir, base_name + ".json")
             with open(out_json, "w", encoding="utf-8") as f:
-                json.dump({
-                    "overall_accuracy_pct": round(acc * 100, 1),
-                    "total": total,
-                    "correct": correct,
-                    "by_condition": dict(by_cond),
-                    "dataset_format": self.dataset_format,
-                    "retrieval": self.retrieval,
-                    "top_k": top_k,
-                    "items": results,
-                }, f, ensure_ascii=False, indent=2)
+                json.dump(output, f, ensure_ascii=False, indent=2)
             print(f"[save] {out_json}")
 
         else:
@@ -1133,10 +1535,14 @@ class UnifiedRAG:
                 for it in results:
                     rr = it.get("ragas_results", {})
                     if rr and "error" not in rr:
+                        ctx = it.get("context", "")
+                        # Handle context as list (from retrieved paragraphs)
+                        if isinstance(ctx, list):
+                            ctx = " | ".join(ctx[:3])  # Join first 3 contexts
                         rows.append({
                             "question": it.get("question", ""),
                             "answer": it.get("extracted_answer", ""),
-                            "context": it.get("context", ""),
+                            "context": ctx[:2000] if ctx else "",  # Truncate for CSV
                             "ragas_faithfulness": rr.get("faithfulness", 0.0),
                             "ragas_answer_relevancy": rr.get("answer_relevancy", 0.0),
                             "ragas_ContextRelevance": rr.get("ContextRelevance", 0.0),

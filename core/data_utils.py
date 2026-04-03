@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import random
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -52,3 +53,21 @@ def process_csv_format(df: pd.DataFrame,
             df[c] = df[c].astype(str).str.strip()
     print(f"[format] mode={mode} columns_ok={cols_needed}")
     return df
+
+
+def create_timestamped_output_dir(base_dir: str | os.PathLike, task_name: str) -> str:
+    """
+    Create output directory with timestamp format: YYYYMMDD_HHMM_{task_name}_results
+
+    Args:
+        base_dir: Base directory (e.g., results/)
+        task_name: Task identifier (e.g., gpt_paragraph, rag_json_c_rag)
+
+    Returns:
+        Full path to created directory
+    """
+    stamp = time.strftime("%Y%m%d_%H%M")
+    dir_name = f"{stamp}_{task_name}_results"
+    full_path = os.path.join(str(base_dir), dir_name)
+    os.makedirs(full_path, exist_ok=True)
+    return full_path
